@@ -77,8 +77,9 @@ def _mock_server_up(monkeypatch):
     """Mocke ping via httpx.MockTransport (serveur « up »).
 
     ping sonde désormais GET /docs (repli /openapi.json) : le handler
-    retourne 200 sur /docs. list_models est LOCAL (aucun appel réseau) :
-    il n'est pas mocké — la vraie liste de modèles connus est retournée.
+    retourne 200 sur /docs. list_models n'est pas mocké : il tente un vrai
+    GET /v1/models (échoue en test, aucun serveur local) et retombe sur la
+    liste locale WHISPERLIVE_MODELS.
     Retourne la liste des URL sondées (assertions sur /docs).
     """
     from app.engine import transcriber_client
@@ -102,8 +103,8 @@ def _mock_server_up(monkeypatch):
 
 
 def _mock_server_down(monkeypatch):
-    """Mocke ping : serveur injoignable (reachable False). list_models est
-    LOCAL (aucun appel réseau) — il n'est pas mocké."""
+    """Mocke ping : serveur injoignable (reachable False). list_models n'est
+    pas mocké — GET /v1/models échoue et retombe sur la liste locale."""
     from app.engine import transcriber_client
 
     monkeypatch.setattr(
@@ -262,7 +263,9 @@ class TestServer:
         assert body["model"] == DEFAULT_CONFIG["model"]
         assert body["models"] == list(WHISPERLIVE_MODELS)
         assert body["message"] == "Serveur talky détecté"
-        # ping passe par GET /docs (whisper-live n'a ni /health ni /v1/models).
+        # ping passe par GET /docs (repli /openapi.json, avec la clé) : le
+        # serveur talky expose désormais /health (exempté d'auth) mais ping()
+        # ne le sonde pas — le mock ne sert que /docs et /openapi.json.
         assert any(url.endswith("/docs") for url in hits)
         assert not any(url.endswith("/openapi.json") for url in hits)
 
@@ -285,7 +288,8 @@ class TestServer:
         assert body["reachable"] is False
         assert "error" in body
         assert body["message"] == "Serveur talky injoignable"
-        # list_models est LOCAL : la liste est affichée même serveur down.
+        # list_models retombe sur la liste locale : la liste est affichée
+        # même serveur down.
         assert body["models"] == list(WHISPERLIVE_MODELS)
 
     def test_server_test_reachable(self, client, monkeypatch):

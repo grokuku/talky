@@ -95,11 +95,15 @@ des prérequis GPU (Unraid : plugins + reboot ; Proxmox : passthrough).
       > `large-v3-turbo`) et peut être **installé depuis le client** : `GET /v1/registry` (liste des
       > modèles disponibles) + `POST /v1/models` (téléchargement dans le cache). Le paramètre REST
       > `model` est honoré (alias faster-whisper ou repo ID complet).
-- [ ] Sonde de disponibilité — la sonde est `/docs` (Swagger UI) ou `/openapi.json` (FastAPI les
-      sert toujours, y compris avec une clé) :
+- [ ] Sonde de disponibilité — la sonde applicative est `/docs` (Swagger UI) ou `/openapi.json`
+      (FastAPI les sert toujours, y compris avec une clé) ; le serveur expose aussi `/health`,
+      sonde sans secret **exemptée d'auth** (utilisée par le healthcheck Docker) :
       ```bash
-      curl -fsS -o /dev/null -w '%{http_code}\n' http://<ip-serveur>:8000/docs      # → 200
-      curl -fsS http://<ip-serveur>:8000/openapi.json | head -c 200
+      curl -fsS -o /dev/null -w '%{http_code}\n' http://<ip-serveur>:8000/health   # → 200, sans clé
+      curl -fsS -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TALKY_API_KEY" \
+           http://<ip-serveur>:8000/docs      # → 200 (header si TALKY_API_KEY est défini)
+      curl -fsS -H "Authorization: Bearer $TALKY_API_KEY" \
+           http://<ip-serveur>:8000/openapi.json | head -c 200   # header si TALKY_API_KEY défini
       ```
 - [ ] Smoke test — transcription de `test.wav` OK (le script lit `TALKY_API_KEY`/`TALKY_WS_PORT` dans
       `.env` automatiquement ; il teste /docs, la transcription puis le WebSocket en option) :
@@ -168,7 +172,9 @@ des prérequis GPU (Unraid : plugins + reboot ; Proxmox : passthrough).
       vérifier `server_url`, le firewall du serveur et la sonde :
       ```bash
       ping <ip-serveur>
-      curl -fsS -o /dev/null -w '%{http_code}\n' http://<ip-serveur>:8000/docs   # → 200
+      curl -fsS -o /dev/null -w '%{http_code}\n' http://<ip-serveur>:8000/health   # → 200 (sans clé)
+      curl -fsS -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TALKY_API_KEY" \
+           http://<ip-serveur>:8000/docs   # → 200 (header si TALKY_API_KEY est défini)
       ```
 - [ ] Cliquer **« Tester la connexion »** → latence (ms) + **modèle `large-v3-turbo`** + device
       **`cuda`** + compute **`int8`** affichés (champs lecture seule).

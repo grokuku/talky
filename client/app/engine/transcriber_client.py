@@ -106,6 +106,8 @@ _ERR_AUTH = "Authentification refusée (API key)"
 _ERR_NOT_FOUND = "Endpoint introuvable — vérifier server_url"
 _ERR_INVALID = "Requête invalide (modèle ou langue)"
 _ERR_TOO_LARGE = "Fichier audio trop volumineux"
+_ERR_BUSY = ("Serveur occupé — tous les modèles sont en cours d'utilisation, "
+            "réessaie dans un instant")
 _ERR_SERVER = "Erreur serveur (GPU) — réessayer"
 _ERR_UNEXPECTED = "Réponse serveur inattendue"
 
@@ -206,6 +208,8 @@ def transcribe(audio: np.ndarray, config: dict,
         raise TranscriptionError(_ERR_INVALID)
     if response.status_code == 413:
         raise TranscriptionError(_ERR_TOO_LARGE)
+    if response.status_code == 503:
+        raise TranscriptionError(_ERR_BUSY)
     if response.status_code >= 500:
         raise TranscriptionError(_ERR_SERVER)
     if response.status_code != 200:
@@ -236,10 +240,12 @@ def ping(server_url: str, api_key: str = "", timeout: float = 5.0,
          transport: object = None) -> dict:
     """Sonde le serveur talky — ne lève JAMAIS d'exception.
 
-    Le serveur talky (conteneur maison, FastAPI) n'expose pas /health : la
-    sonde de disponibilité est GET {server_url}/docs (Swagger UI FastAPI). Si
-    /docs répond 404/405, on retombe sur GET {server_url}/openapi.json. Si les
-    deux échouent, le serveur est considéré injoignable/incompatible.
+    Le serveur talky (conteneur maison, FastAPI) expose désormais GET
+    {server_url}/health (sonde sans secret, exemptée d'auth), mais ping()
+    continue de sonder GET {server_url}/docs (Swagger UI FastAPI) puis — si
+    /docs répond 404/405 — GET {server_url}/openapi.json, dans les deux cas
+    avec la clé API (header Authorization). Si les deux échouent, le serveur
+    est considéré injoignable/incompatible.
 
     Retourne {"reachable": True, "status": ...} ou
     {"reachable": False, "error": ...}.

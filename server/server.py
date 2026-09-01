@@ -24,6 +24,7 @@ import logging
 import os
 import secrets
 import threading
+import time
 import wave
 from typing import Optional
 
@@ -53,6 +54,24 @@ CACHE_DIR = os.environ.get("HF_HOME", "/var/lib/whisper-live")
 VAD_THRESHOLD = float(os.environ.get("TALKY_VAD_THRESHOLD", "0.5"))
 VAD_SILENCE_MS = int(os.environ.get("TALKY_VAD_SILENCE_MS", "500"))
 MAX_CLIENTS = int(os.environ.get("TALKY_MAX_CLIENTS", "4"))
+
+
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    """Lit une variable d'env entière de façon robuste (fallback `default`)."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return max(minimum, int(raw.strip()))
+    except ValueError:
+        log.warning("%s invalide (%r) : valeur par défaut %d utilisée.",
+                    name, raw, default)
+        return default
+
+
+# Plafond VRAM : nombre max de modèles Whisper chargés simultanément.
+# Au-delà, le modèle le moins récemment utilisé (LRU) est évincé.
+MAX_MODELS = _env_int("TALKY_MAX_MODELS", 3, minimum=1)
 # Clé API optionnelle : si non vide, exige `Authorization: Bearer <clé>` sur
 # REST et dans le handshake WebSocket. Vide = aucune authentification (LAN).
 API_KEY = os.environ.get("TALKY_API_KEY", "").strip()
@@ -174,41 +193,125 @@ REGISTRY_MODELS = [
 # ---------------------------------------------------------------------------
 # Gestionnaire de modèles (chargement paresseux, partagé, thread-safe)
 # ---------------------------------------------------------------------------
+class ModelCapacityError(RuntimeError):
+    """Plus de place pour charger un modèle : tous les slots sont occupés."""
+
+
 class ModelManager:
     """Charge les modèles faster-whisper à la demande (INT8) et les garde en
     mémoire. Un verrou global sérialise les inférences (le modèle CTranslate2
-    est partagé entre les sessions WebSocket et les requêtes batch)."""
+    est partagé entre les sessions WebSocket et les requêtes batch).
+
+    Le nombre de modèles simultanément en VRAM est plafonné
+    (TALKY_MAX_MODELS) : au-delà, le modèle le moins récemment utilisé
+    (LRU, hors inférence en cours) est évincé puis le cache CUDA est vidé."""
 
     def __init__(self) -> None:
         self._models: dict[str, object] = {}
+        self._last_used: dict[str, float] = {}   # LRU : dernier usage (monotonic)
+        self._in_use: dict[str, int] = {}        # nb d'inférences en cours
+        self._max_models = MAX_MODELS            # plafond VRAM
         self._lock = threading.Lock()
         self._infer_lock = threading.Lock()
 
-    def get(self, model: str, compute_type: str = COMPUTE_TYPE) -> object:
-        repo = resolve_repo(model)
-        key = f"{repo}:{compute_type}"
+    @staticmethod
+    def _key(model: str, compute_type: str) -> str:
+        """Clé de cache d'un modèle chargé ("{repo}:{compute_type}")."""
+        return f"{resolve_repo(model)}:{compute_type}"
+
+    def get(self, model: str, compute_type: str = COMPUTE_TYPE,
+            hold: bool = False) -> object:
+        """Retourne un modèle chargé, en le chargeant si besoin.
+
+        Si ``hold`` est True, incrémente le compteur ``_in_use[key]`` SOUS le
+        même ``self._lock`` avant de retourner l'objet (fermeture de la course
+        TOCTOU entre la résolution du modèle et le marquage « occupé ») :
+        l'appelant devient propriétaire d'une « prise » qu'il doit solder dans
+        un ``try/finally`` (diminution / suppression du compteur). Le handshake
+        WebSocket appelle ``get()`` sans ``hold`` : simple chargement, aucune
+        prise."""
+        key = self._key(model, compute_type)
         with self._lock:
-            if key not in self._models:
-                log.info("Chargement du modèle %s (repo %s, %s)…",
-                         model, repo, compute_type)
-                from faster_whisper import WhisperModel  # import paresseux
-                self._models[key] = WhisperModel(
-                    repo, device="cuda", compute_type=compute_type)
-                log.info("Modèle %s chargé (compute_type=%s).", repo, compute_type)
+            if key in self._models:
+                self._last_used[key] = time.monotonic()   # touch LRU
+                if hold:
+                    self._in_use[key] = self._in_use.get(key, 0) + 1
+                return self._models[key]
+            # Plafond VRAM : évince les modèles LRU non busy avant d'en
+            # charger un nouveau (jamais celui qu'on va charger).
+            self._evict_for(key)
+            repo = resolve_repo(model)
+            log.info("Chargement du modèle %s (repo %s, %s)…",
+                     model, repo, compute_type)
+            from faster_whisper import WhisperModel  # import paresseux
+            self._models[key] = WhisperModel(
+                repo, device="cuda", compute_type=compute_type)
+            self._last_used[key] = time.monotonic()
+            if hold:
+                self._in_use[key] = self._in_use.get(key, 0) + 1
+            else:
+                self._in_use.setdefault(key, 0)
+            log.info("Modèle %s chargé (compute_type=%s).", repo, compute_type)
             return self._models[key]
+
+    def _evict_for(self, new_key: str) -> None:
+        """Libère une place pour `new_key` en évinçant le(s) modèle(s) les
+        moins récemment utilisés (LRU) non en cours d'inférence.
+
+        Appelé sous self._lock. Lève ModelCapacityError si aucun modèle
+        évictable (tous busy — quasi impossible : _infer_lock garantit au
+        plus une inférence à la fois)."""
+        while len(self._models) >= self._max_models:
+            victim = min(
+                (k for k in self._models
+                 if k != new_key and not self._in_use.get(k, 0)),
+                key=lambda k: self._last_used.get(k, 0.0),
+                default=None)
+            if victim is None:
+                raise ModelCapacityError(
+                    f"Plafond de modèles atteint ({self._max_models}) et "
+                    "tous les modèles chargés sont en cours d'inférence ; "
+                    "réessayez dans un instant.")
+            log.info("Éviction LRU du modèle %s (plafond : %d modèles).",
+                     victim, self._max_models)
+            del self._models[victim]
+            self._last_used.pop(victim, None)
+            self._in_use.pop(victim, None)
+            self._empty_cuda_cache()
+
+    @staticmethod
+    def _empty_cuda_cache() -> None:
+        """Vide le cache CUDA après une éviction (best-effort, jamais fatal)."""
+        try:
+            import torch  # import différé : torch peut être indisponible
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception as exc:  # noqa: BLE001
+            log.debug("torch.cuda.empty_cache() indisponible : %s", exc)
 
     def transcribe(self, model: str, audio: np.ndarray,
                    language: Optional[str] = None,
                    compute_type: str = COMPUTE_TYPE) -> tuple[str, dict]:
         """Transcrit `audio` (float32 16 kHz mono). Retourne (text, info)."""
-        m = self.get(model, compute_type=compute_type)
+        key = self._key(model, compute_type)
+        # hold=True : incrément _in_use atomique sous self._lock dans get()
+        # (pas de course TOCTOU) ; le try/finally ci-dessous solde le compteur.
+        m = self.get(model, compute_type=compute_type, hold=True)
         lang = language or LANGUAGE
         with self._infer_lock:
-            segments, info = m.transcribe(
-                audio, language=lang, beam_size=5,
-                vad_filter=False,                 # VAD déjà appliqué en amont
-                condition_on_previous_text=False)
-            text = "".join(s.text for s in segments).strip()
+            try:
+                segments, info = m.transcribe(
+                    audio, language=lang, beam_size=5,
+                    vad_filter=False,                 # VAD déjà appliqué en amont
+                    condition_on_previous_text=False)
+                text = "".join(s.text for s in segments).strip()
+            finally:
+                with self._lock:
+                    n = self._in_use.get(key, 0) - 1
+                    if n > 0:
+                        self._in_use[key] = n
+                    else:
+                        self._in_use.pop(key, None)
         return text, {"language": info.language, "duration": info.duration}
 
     def installed(self) -> list[str]:
@@ -486,6 +589,11 @@ async def transcribe_batch(
     try:
         text, info = await anyio.to_thread.run_sync(
             MODELS.transcribe, model, audio, language, compute_type)
+    except ModelCapacityError as exc:
+        # Plafond VRAM atteint et tous les modèles busy : indisponible
+        # temporairement (le client peut retenter).
+        log.warning("Refus transcription batch (capacité modèles) : %s", exc)
+        raise HTTPException(503, str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         log.exception("Erreur transcription batch")
         raise HTTPException(500, f"Erreur GPU : {exc}") from exc

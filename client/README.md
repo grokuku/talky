@@ -203,7 +203,7 @@ login** (hotkeys actives dès la session). Sans `auto_start`, cliquez sur
 | Symptôme | Cause probable | Solution |
 |---|---|---|
 | Les hotkeys ne réagissent pas | Utilisateur absent du groupe `input` ; session non redémarrée ; conflit avec un raccourci KDE | `sudo usermod -aG input $USER` + reconnexion ; choisir une touche libre (F8, `ctrl+space`) dans KDE |
-| « Serveur déconnecté » dans le panneau | `server_url` incorrect ; serveur éteint ; clé API absente/erronée | Vérifier `server_url` ; `curl http://<ip>:8000/docs` ; « Tester la connexion » ; aligner la clé API |
+| « Serveur déconnecté » dans le panneau | `server_url` incorrect ; serveur éteint ; clé API absente/erronée | Vérifier `server_url` ; sonder `curl http://<ip>:8000/health` (200 sans clé) ou `curl -H "Authorization: Bearer $TALKY_API_KEY" http://<ip>:8000/docs` (header si TALKY_API_KEY est défini) ; « Tester la connexion » ; aligner la clé API |
 | Micro muet | `pipewire-alsa` manquant ; mauvais micro sélectionné | Installer `pipewire-alsa` ; sélectionner le micro dans le panneau (liste `GET /api/devices/audio`) |
 | Texte non injecté | `inject_text` désactivé ; ydotool/wtype absents ; l'app cible refuse Ctrl+V | Activer `inject_text` ; installer `ydotool` (+ daemon) ou `wtype` ; si l'app ne colle pas, passer `inject_text: false` (copie seule) |
 | `401 Unauthorized` | `server_api_key` ≠ `TALKY_API_KEY` du serveur | Aligner la clé (voir [`../server/README.md`](../server/README.md)) |

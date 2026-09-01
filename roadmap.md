@@ -162,7 +162,7 @@ ConnectError/ConnectTimeout → « Serveur injoignable — vérifier server_url 
 
 ### 3.5 Endpoints utilitaires
 - GET {server_url}/v1/models : liste lecture seule des modèles (retourne `[]` si erreur/404 — whisper-live expose cet endpoint OpenAI-compatible).
-- **Sonde de disponibilité** : GET /docs ou /openapi.json (whisper-live n'expose **ni /health ni /v1/models** en sonde ; FastAPI sert toujours /docs et /openapi.json).
+- **Sonde de disponibilité** : GET /docs ou /openapi.json (FastAPI les sert toujours, y compris avec une clé). Le serveur talky expose désormais aussi **GET /health** (sonde ultra-légère, **exemptée d'auth**, utilisée par le healthcheck Docker) — ping() continue de sonder /docs puis /openapi.json avec la clé.
 - POST /api/server/test (API locale) → ping + list_models + latence. GET /api/server/status (API locale) → reachable, model, models, device/compute_type (cuda/int8).
 > Les routes speaches `/api/server/registry` et `/api/server/models/download` ont été **SUPPRIMÉES** : whisper-live n'a ni registry ni installation de modèles (le modèle est fixé par `WHISPERLIVE_MODEL` côté serveur).
 
@@ -253,7 +253,7 @@ HotkeyManager remplace le module keyboard par python-evdev : énumère /dev/inpu
 inject_text(text, add_space, inject, keep_in_clipboard, log_callback) : pyperclip 1.11.0 (détecte wl-copy/wl-paste), sauvegarde ancien contenu, copie text+suffix, sleep 0.05, Ctrl+V : fallback ydotool (daemon ydotoold) → wtype -M ctrl v -m ctrl → evdev UInput pur Python. Restauration si keep_in_clipboard=false. inject=false → copie seule si keep_in_clipboard=true.
 
 ### 5.4 transcriber_client.py — allégé (migration whisper-live)
-encode_wav(audio np.ndarray) → bytes (wave + io.BytesIO, PCM16 16kHz mono) ; TranscriptionResult(text, language, duration) dataclass ; transcribe(audio, config) → TranscriptionResult | None ; ping() → dict (essaie GET /v1/models puis replie sur /health — ne lève jamais) ; TranscriptionError typée avec messages FR du §3.4.
+encode_wav(audio np.ndarray) → bytes (wave + io.BytesIO, PCM16 16kHz mono) ; TranscriptionResult(text, language, duration) dataclass ; transcribe(audio, config) → TranscriptionResult | None ; ping() → dict (sonde GET /docs puis repli /openapi.json avec la clé API — ne lève jamais) ; TranscriptionError typée avec messages FR du §3.4.
 
 **Migration** : `list_registry()` et `download_model()` **supprimés** (whisper-live n'a ni registry ni installation de modèles). `list_models(server_url, api_key, timeout)` **conservé** (GET /v1/models, liste lecture seule, `[]` si erreur). Les paramètres `task`/`temperature` ne sont **plus envoyés** (voir §3.1).
 

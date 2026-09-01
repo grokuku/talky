@@ -23,6 +23,7 @@ from app.api import (
     routes_engine,
     routes_history,
     routes_server,
+    security,
     websocket,
 )
 from app.api.lifespan import lifespan
@@ -63,5 +64,27 @@ def build_app() -> FastAPI:
     app.include_router(routes_devices.router)
     app.include_router(routes_server.router)
     app.include_router(websocket.router)
+
+    # (S4) Protection CSRF / DNS-rebinding du REST : toute requête /api/*
+    # (toutes méthodes) passe par le filtrage de app/api/security.py — c'est
+    # la validation DÉDIÉE du header Host (anti DNS-rebinding : un Host nommé
+    # non autorisé est bloqué même si l'Origin passerait) puis le filtrage
+    # d'Origin (anti CSRF ; curl / panneau même origine / accès LAN par IP
+    # restent acceptés — voir le trade-off LAN-par-nom dans security.py) ; le
+    # WebSocket /ws garde SON propre filtrage (websocket.py). Enregistrement
+    # défensif : le mock fastapi des tests (tests/conftest.py) n'expose pas
+    # ``middleware`` — sans ce garde, build_app() échouerait en environnement
+    # de test nu ; la logique de décision reste de toute façon pure et testée
+    # à part (tests/test_security_origin.py).
+    if hasattr(app, "middleware"):
+
+        @app.middleware("http")
+        async def guard_api_origins(request, call_next):
+            """403 pour toute requête /api/* dont le Host ou l'Origin est interdit."""
+            if request.url.path.startswith("/api/"):
+                blocked = security.origin_guard(request)
+                if blocked is not None:
+                    return blocked
+            return await call_next(request)
 
     return app

@@ -32,6 +32,8 @@ services:
       - TALKY_VAD_SILENCE_MS=${TALKY_VAD_SILENCE_MS:-500}
       # --- Concurrence / logs ----------------------------------------------
       - TALKY_MAX_CLIENTS=${TALKY_MAX_CLIENTS:-4}
+      # Plafond VRAM : modèles Whisper chargés simultanément (éviction LRU).
+      - TALKY_MAX_MODELS=${TALKY_MAX_MODELS:-3}
       - TALKY_LOG_LEVEL=${TALKY_LOG_LEVEL:-INFO}
       # --- Authentification -------------------------------------------------
       # Clé API optionnelle (vide = aucune authentification, usage LAN privé).

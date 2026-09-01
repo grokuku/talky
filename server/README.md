@@ -14,6 +14,7 @@ précision, on expose les endpoints dont le client a besoin.
 |---|---|
 | `POST /v1/audio/transcriptions` | Transcription batch (OpenAI-compatible, `response_format=verbose_json` supporté) |
 | `GET  /docs` | Sonde de disponibilité (FastAPI Swagger) |
+| `GET  /health` | Sonde de santé sans secret (`{"status": "ok"}`) — **exemptée d'auth**, utilisée par le HEALTHCHECK Docker |
 | `WS   /` (port WS) | Transcription temps réel (VAD Silero, protocole compatible client talky) |
 | `GET  /v1/models` | Modèles présents dans le cache local |
 | `GET  /v1/registry?task=…` | Modèles disponibles à l'installation (registry HuggingFace) |
@@ -52,6 +53,7 @@ docker compose logs -f             # attendre « Talky serveur : REST+WS sur 0.0
 | `TALKY_VAD_THRESHOLD` | `0.5` | Seuil de détection de parole |
 | `TALKY_VAD_SILENCE_MS` | `500` | Silence pour finaliser une phrase |
 | `TALKY_MAX_CLIENTS` | `4` | Sessions WebSocket simultanées |
+| `TALKY_MAX_MODELS` | `3` | Modèles simultanément en VRAM (éviction LRU au-delà) |
 | `TALKY_API_KEY` | *(vide)* | Clé API optionnelle : si non vide, exige `Authorization: Bearer <clé>` sur REST + handshake WS (vide = aucune auth) |
 | `TALKY_LOG_LEVEL` | `INFO` | Niveau de log |
 | `HF_CACHE_PATH` | `./hf-hub-cache` | Dossier de cache côté hôte |
@@ -66,12 +68,13 @@ choisi comme `TALKY_MODEL` (ou envoyé par requête via le paramètre
 `model`).
 
 ```bash
-# Via API (ex. installer medium) :
+# Via API (ex. installer medium) — header si TALKY_API_KEY est défini :
 curl -X POST http://10.10.0.5:8000/v1/models \
      -H 'Content-Type: application/json' \
+     -H "Authorization: Bearer $TALKY_API_KEY" \
      -d '{"model": "medium"}'
-# Vérifier l'installation :
-curl http://10.10.0.5:8000/v1/models
+# Vérifier l'installation (header si TALKY_API_KEY est défini) :
+curl -H "Authorization: Bearer $TALKY_API_KEY" http://10.10.0.5:8000/v1/models
 ```
 
 ## Test
@@ -93,5 +96,6 @@ curl http://10.10.0.5:8000/v1/models
 ## Sécurité
 
 - **Authentification optionnelle** : par défaut aucune (`TALKY_API_KEY` vide) — usage LAN privé. Ne pas exposer les ports sur Internet sans reverse proxy + HTTPS.
-- Si `TALKY_API_KEY` est non vide, le serveur exige `Authorization: Bearer <clé>` sur **toutes** les routes REST (y compris `/docs`, `/openapi.json`) et dans le **handshake WebSocket** (header `Authorization`). Le client talky envoie cette clé via `server_api_key` (config.json).
+- Si `TALKY_API_KEY` est non vide, le serveur exige `Authorization: Bearer <clé>` sur **toutes** les routes REST (y compris `/docs`, `/openapi.json` — seul `/health` est exempté, cf. tableau ci-dessus) et dans le **handshake WebSocket** (header `Authorization`). Le client talky envoie cette clé via `server_api_key` (config.json).
+- **Format de la clé** : alphanumérique, **sans guillemets ni espaces**. Le serveur strip la valeur lue dans `.env` (espaces de début/fin uniquement, pas les guillemets) ; le client talky ne strip rien (`server_api_key` envoyé tel quel depuis config.json) — une clé copiée avec guillemets ou espaces ne correspondra jamais (401).
 - **Origines WebSocket (client)** : le panneau web du client n'accepte que les origines `http://127.0.0.1:8000` et `http://localhost:8000` ; pour un accès LAN, ajouter l'origine via `TALKY_ALLOWED_ORIGINS` (liste CSV) côté client.

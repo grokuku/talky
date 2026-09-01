@@ -208,7 +208,8 @@ class TestTranscribe:
         (422, "Requête invalide (modèle ou langue)"),
         (413, "Fichier audio trop volumineux"),
         (500, "Erreur serveur (GPU) — réessayer"),
-        (503, "Erreur serveur (GPU) — réessayer"),
+        (503, "Serveur occupé — tous les modèles sont en cours d'utilisation, "
+              "réessaie dans un instant"),
         ("bad_json", "Réponse serveur inattendue"),
         ("empty_200", "Réponse serveur inattendue"),
     ])

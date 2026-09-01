@@ -14,6 +14,11 @@ Section « Serveur » de l'interface web (roadmap §3.5, §5.9, R12) :
 `device` / `compute_type` sont ceux du serveur talky (cf. app/core/constants.py
 SERVER_DEFAULTS). La disponibilité se sonde via /docs (repli /openapi.json) et
 la liste des modèles vient de GET /v1/models (repli local).
+
+Tous les appels httpx (ping, list_models, list_registry, download_model) sont
+offloadés via asyncio.to_thread : les fonctions clientes restent bloquantes
+(httpx synchrone) et ne doivent jamais geler la boucle d'événements — notamment
+pendant le polling /api/server/status toutes les 5 s par le frontend.
 """
 
 import asyncio
@@ -27,9 +32,10 @@ from app.engine import transcriber_client
 
 router = APIRouter(prefix="/api/server", tags=["server"])
 
-# Timeout court de la sonde réseau (ping) : l'interface web ne doit jamais
-# rester bloquée sur un serveur injoignable. list_models est LOCAL (aucun
-# appel réseau) : il est appelé sans condition, la liste est toujours dispo.
+# Timeout court de la sonde réseau (ping, list_models) : l'interface web ne
+# doit jamais rester bloquée sur un serveur injoignable. list_models fait un
+# GET /v1/models côté serveur (repli sur la liste locale en cas d'échec) :
+# il est appelé sans condition, la liste est toujours dispo.
 SERVER_PROBE_TIMEOUT = 3.0
 
 
@@ -49,9 +55,9 @@ async def server_status() -> dict:
         transcriber_client.ping, server_url, api_key,
         timeout=SERVER_PROBE_TIMEOUT)
     reachable = bool(ping_result.get("reachable", False))
-    # list_models est LOCAL (aucun réseau) : on renvoie toujours la liste des
-    # modèles connus supportés par whisper-live — le frontend a une liste à
-    # afficher même serveur injoignable.
+    # list_models interroge GET /v1/models côté serveur, avec repli sur la
+    # liste locale des modèles connus (whisper-live) : le frontend a donc
+    # toujours une liste à afficher, même serveur injoignable.
     models = await asyncio.to_thread(
         transcriber_client.list_models, server_url, api_key,
         timeout=SERVER_PROBE_TIMEOUT)
