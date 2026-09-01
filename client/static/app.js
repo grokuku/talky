@@ -379,10 +379,16 @@ function renderConfig() {
   $("cfg-max-history").value = c.max_history ?? 50;
   if ($("hotkey-pick")) $("hotkey-pick").textContent = c.hotkey || "—";
   if ($("hero-hotkey")) $("hero-hotkey").textContent = c.hotkey || "—";
-  // NB : plus de scheduleFitZoom() ici — remplir la config ne change pas le
-  // zoom. Le scale ne se recalcule que sur resize / first-run. La croissance
-  // de contenu de .col-side (config rendue, feedbacks) est couverte par le
-  // ResizeObserver debouncé installé dans init() — pas besoin de one-shot.
+  // NB : plus de scheduleFitZoom() ici pour un simple remplissage — le scale
+  // ne se recalcule QUE sur resize / first-run. La croissance de contenu de
+  // .col-side (config rendue, feedbacks) est couverte par le MutationObserver
+  // debouncé installé dans init() — pas besoin de one-shot.
+  // Premier renderConfig : débloque le premier fitZoom (qui attendait pour
+  // mesurer la base avec le VRAI contenu, pas la colonne encore vide).
+  if (fitFirstPending) {
+    fitFirstPending = false;
+    scheduleFitZoom(true);
+  }
   updateHeroMicLabel();
 }
 
@@ -1722,9 +1728,11 @@ function initHotkeyCapture() {
 //     le topbar réel, mesuré via getBoundingClientRect().bottom) et on ajuste
 //     lockH de delta/scale (max 2 itérations) — absorbe TOUS les offsets
 //     constants sans les deviner.
-//   - ResizeObserver debouncé sur .col-side : si sa hauteur naturelle change
-//     de plus de 8px (config rendue, feedbacks), on re-déclenche fitZoom pour
-//     que la colonne droite remplisse toujours la hauteur.
+//   - MutationObserver debouncé sur .col-side : si sa hauteur NATURELLE change
+//     de plus de 8px (config rendue, liste registry, feedbacks), on invalide
+//     la base et on re-déclenche fitZoom pour que la colonne droite remplisse
+//     toujours la hauteur. (Le ResizeObserver ne voyait pas ces changements
+//     quand la boîte est plafonnée par max-height : seul le contenu déborde.)
 //   - si le contenu dépasse même au zoom min (0.85) → on laisse le scroll
 //     normal, on n'écrase jamais le contenu.
 // Sans JS (ou .fit-vp absent) : comportement scroll normal existant.
@@ -1737,6 +1745,11 @@ let fitZoomTimer = null;
 // Hauteur naturelle de référence (px) mesurée une fois, conservée entre deux
 // resize. 0 = pas encore mesurée → fitZoom la mesure au passage.
 let fitBaseNatural = 0;
+// Premier fitZoom différé : on attend le premier renderConfig (pour mesurer la
+// base avec le VRAI contenu, pas la colonne encore vide) OU un délai de 300 ms,
+// selon ce qui vient en premier. Évite le flash initial en scale 1.6 sur une
+// colonne vide puis le re-zoom brutal quand la config se rend.
+let fitFirstPending = true;
 
 function zoomSupported() {
   return "zoom" in document.body.style;
@@ -1756,6 +1769,8 @@ function invalidateFitBase() {
 function scheduleFitZoom(remeasure) {
   if (fitZoomTimer) clearTimeout(fitZoomTimer);
   if (remeasure) invalidateFitBase();
+  // Premier run : différé jusqu'au premier renderConfig (ou deadline 300 ms).
+  if (fitFirstPending) return;
   fitZoomTimer = setTimeout(fitZoom, 150);
 }
 
@@ -1766,10 +1781,23 @@ function scheduleFitZoom(remeasure) {
 // hauteur ; la colonne gauche s'adapte (cadre historique réduit). On mesure
 // donc UNIQUEMENT .col-side (jamais le .layout entier, qui serait influencé par
 // la colonne gauche).
-function measureFitBase() {
+//
+// Mesure la hauteur NATURELLE de .col-side (déverrouillée), indépendamment du
+// zoom/verrouillage courant. Retourne 0 si indisponible. Ne laisse jamais
+// l'état dégradé (restauration systématique en finally). Utilisée par
+// measureFitBase ET par le MutationObserver (détection de croissance de
+// contenu que le ResizeObserver ne voyait pas quand la boîte est plafonnée).
+function measureColSideNatural() {
   const layout = document.querySelector(".layout");
   const colSide = document.querySelector(".col-side");
   if (!layout || !colSide) return 0;
+  const savedLayout = {
+    zoom: layout.style.zoom,
+    transform: layout.style.transform,
+    width: layout.style.width,
+    height: layout.style.height,
+  };
+  const savedSide = { height: colSide.style.height, alignSelf: colSide.style.alignSelf };
   layout.style.zoom = "1";
   layout.style.transform = "";
   layout.style.width = "";
@@ -1777,21 +1805,30 @@ function measureFitBase() {
   // La colonne de droite doit être mesurée à sa hauteur NATURELLE : on
   // déverrouille sa hauteur inline et on neutralise le stretch du flex parent
   // (align-items:stretch) qui sinon la forcerait à remplir le conteneur.
-  const savedSide = { height: colSide.style.height, alignSelf: colSide.style.alignSelf };
   colSide.style.height = "auto";
   colSide.style.alignSelf = "flex-start";
-
   try {
-    const tbEl = document.querySelector(".topbar");
-    const topbarBottom = tbEl ? tbEl.getBoundingClientRect().bottom : 0;
-    const available = Math.max(220, window.innerHeight - topbarBottom);
-    fitBaseNatural = colSide.offsetHeight || available;
-    return fitBaseNatural;
+    return colSide.offsetHeight || 0;
   } finally {
     // Restauration systématique (mesure jamais laissée en état dégradé).
+    layout.style.zoom = savedLayout.zoom;
+    layout.style.transform = savedLayout.transform;
+    layout.style.width = savedLayout.width;
+    layout.style.height = savedLayout.height;
     colSide.style.height = savedSide.height;
     colSide.style.alignSelf = savedSide.alignSelf;
   }
+}
+
+function measureFitBase() {
+  const layout = document.querySelector(".layout");
+  const colSide = document.querySelector(".col-side");
+  if (!layout || !colSide) return 0;
+  const tbEl = document.querySelector(".topbar");
+  const topbarBottom = tbEl ? tbEl.getBoundingClientRect().bottom : 0;
+  const available = Math.max(220, window.innerHeight - topbarBottom);
+  fitBaseNatural = measureColSideNatural() || available;
+  return fitBaseNatural;
 }
 
 function fitZoom() {
@@ -2028,26 +2065,40 @@ function init() {
   window.addEventListener("resize", () => scheduleFitZoom(true));
   scheduleFitZoom(true);
 
-  // ResizeObserver debouncé (150ms) sur .col-side : si sa hauteur naturelle
-  // change de plus de 8px (config qui se rend, feedbacks, résultat de test
-  // serveur…), on re-déclenche fitZoom pour que la colonne droite remplisse
-  // toujours la hauteur. On compare scrollHeight (hauteur de CONTENU, stable
-  // quand on verrouille la hauteur du conteneur) pour éviter toute boucle.
+  // Premier fitZoom différé : attend le premier renderConfig (mesure avec le
+  // VRAI contenu) OU 300 ms max, selon ce qui vient en premier — évite le
+  // flash initial en scale 1.6 sur une colonne encore vide.
+  setTimeout(() => {
+    if (fitFirstPending) {
+      fitFirstPending = false;
+      scheduleFitZoom(true);
+    }
+  }, 300);
+
+  // MutationObserver debouncé (200ms) sur .col-side : détecte les mutations du
+  // CONTENU (config rendue, liste registry, feedbacks, résultat de test
+  // serveur…) que le ResizeObserver ne voyait PAS quand la boîte est plafonnée
+  // par max-height (seul le contenu déborde, la taille de boîte ne change pas).
+  // On compare la hauteur NATURELLE (mesurée déverrouillée) à la base : si elle
+  // change de plus de 8px, on invalide la base et on re-déclenche fitZoom.
+  // Aucune boucle : fitZoom ne mute que des styles inline sur .layout, jamais
+  // le sous-arbre de .col-side observé ici.
   const colSide = document.querySelector(".col-side");
-  if (colSide && typeof ResizeObserver === "function") {
-    let lastSideH = colSide.scrollHeight;
-    let roTimer = null;
-    const ro = new ResizeObserver(() => {
-      if (roTimer) clearTimeout(roTimer);
-      roTimer = setTimeout(() => {
-        const h = colSide.scrollHeight;
+  if (colSide && typeof MutationObserver === "function") {
+    let lastSideH = measureColSideNatural();
+    let moTimer = null;
+    const mo = new MutationObserver(() => {
+      if (moTimer) clearTimeout(moTimer);
+      moTimer = setTimeout(() => {
+        const h = measureColSideNatural();
         if (Math.abs(h - lastSideH) > 8) {
           lastSideH = h;
+          invalidateFitBase();
           scheduleFitZoom(true);
         }
-      }, 150);
+      }, 200);
     });
-    ro.observe(colSide);
+    mo.observe(colSide, { childList: true, subtree: true, characterData: true });
   }
 
   // Une fois les polices web chargées la hauteur naturelle peut changer : on

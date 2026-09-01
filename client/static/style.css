@@ -414,6 +414,11 @@ body.fit-vp .layout {
   align-items: stretch;
   gap: 1.25rem;
   overflow: hidden;
+  /* En fit-vp, on réduit le padding-bottom du conteneur (4rem par défaut) pour
+     que le contenu descende presque au bord : la grosse bande vide en bas
+     disparaît. ~12px de respiration. Le calcul 2-passes de fitZoom mesure le
+     rendu réel (getBoundingClientRect) et absorbe ce padding dans la cible. */
+  padding-bottom: 0.75rem;
 }
 body.fit-vp .layout > .col-main {
   flex: 3 1 0;
