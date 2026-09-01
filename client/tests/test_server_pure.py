@@ -71,3 +71,30 @@ def test_auth_middleware_on_off():
         assert hasattr(srv, "_require_api_key")
     else:
         assert not hasattr(srv, "_require_api_key")
+
+
+def test_is_ct2_candidate_faster_whisper_in_id():
+    """Un id contenant "faster-whisper" est un candidat CT2 (même sans tag)."""
+    assert srv._is_ct2_candidate(
+        "mobiuslabsgmbh/faster-whisper-large-v3-turbo", None) is True
+
+
+def test_is_ct2_candidate_ctranslate2_tag():
+    """Un id quelconque + tag ctranslate2 est un candidat CT2."""
+    assert srv._is_ct2_candidate(
+        "deepdml/faster-whisper-large-v3-turbo-ct2",
+        ["ctranslate2", "whisper"]) is True
+    # Insensible à la casse.
+    assert srv._is_ct2_candidate("foo/bar", ["CTranslate2"]) is True
+
+
+def test_is_ct2_candidate_rejects_openai_pytorch():
+    """openai/whisper-* (PyTorch original) sans tag ctranslate2 est rejeté."""
+    assert srv._is_ct2_candidate(
+        "openai/whisper-large-v3-turbo", ["whisper", "pytorch"]) is False
+
+
+def test_is_ct2_candidate_tags_none():
+    """tags None et id sans faster-whisper -> False."""
+    assert srv._is_ct2_candidate("openai/whisper-tiny", None) is False
+    assert srv._is_ct2_candidate("", None) is False

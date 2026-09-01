@@ -136,12 +136,35 @@ def resolve_repo(model: str) -> str:
       repo ID valide d'une autre organisation).
     """
     model = (model or "").strip()
+    # Les ids "org/nom" (ex. "mobiuslabsgmbh/faster-whisper-large-v3-turbo")
+    # sont passés tels quels. Un nom libre inconnu (sans '/') produira un
+    # repo "Systran/faster-whisper-<nom>" probablement inexistant — désormais
+    # visible dans les logs (log.exception) lors de l'installation.
     if "/" in model:
         return model
     if model in _ALIAS_TO_REPO:
         return _ALIAS_TO_REPO[model]
     guess = f"Systran/faster-whisper-{model}"
     return guess
+
+
+def _is_ct2_candidate(model_id: str, tags: list[str] | None) -> bool:
+    """Vrai si un modèle HF est une conversion CTranslate2 utilisable par
+    faster-whisper (et non un modèle PyTorch original openai/whisper-*).
+
+    Un modèle est retenu si "faster-whisper" apparaît dans son ID OU si le
+    tag "ctranslate2" est présent (comparaison insensible à la casse).
+    Exclut ainsi les modèles PyTorch originaux (openai/whisper-*) qui ne
+    peuvent pas être chargés par faster-whisper.
+    """
+    if not model_id:
+        return False
+    rid = model_id.lower()
+    if "faster-whisper" in rid:
+        return True
+    if tags:
+        return any("ctranslate2" in t.lower() for t in tags)
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -517,22 +540,23 @@ async def registry(task: str = "automatic-speech-recognition") -> dict:
         for m in await anyio.to_thread.run_sync(hf_search,
                                                 "faster-whisper", 100):
             repo_id = m.id
-            if repo_id not in seen_ids:
+            if repo_id not in seen_ids and _is_ct2_candidate(
+                    repo_id, getattr(m, "tags", None)):
                 seen_ids.add(repo_id)
                 combined[repo_id] = {
                     "id": repo_id, "name": repo_id,
                     "params": "", "vram_int8": "", "repo": repo_id}
 
         # Recherche "whisper" (limit=50) — filtrée pour ne garder que les
-        # modèles qui semblent être des conversions CT2 / faster-whisper
-        # (contiennent "faster-whisper" ou "whisper" dans l'ID).
+        # modèles qui sont des conversions CT2 / faster-whisper (via
+        # _is_ct2_candidate) : exclut les modèles PyTorch originaux
+        # openai/whisper-* inutilisables par faster-whisper.
         # (appel réseau HF offloadé en thread : ne doit pas bloquer l'event loop)
         for m in await anyio.to_thread.run_sync(hf_search, "whisper", 50):
             repo_id = m.id
-            rid_lower = repo_id.lower()
             if repo_id in seen_ids:
                 continue
-            if "faster-whisper" in rid_lower or "whisper" in rid_lower:
+            if _is_ct2_candidate(repo_id, getattr(m, "tags", None)):
                 seen_ids.add(repo_id)
                 combined[repo_id] = {
                     "id": repo_id, "name": repo_id,
@@ -564,7 +588,10 @@ async def download_model(body: DownloadModelRequest) -> dict:
     repo = resolve_repo(model_id)
     log.info("Téléchargement du modèle %s (repo %s)…", model_id, repo)
     try:
-        path = await anyio.to_thread.run_sync(snapshot_download, repo_id=repo)
+        # anyio.to_thread.run_sync n'accepte PAS de kwargs (signature
+        # run_sync(func, *args, abandon_on_cancel=False, limiter=None)) :
+        # on passe repo en positionnel, sinon TypeError instantané.
+        path = await anyio.to_thread.run_sync(snapshot_download, repo)
     except Exception as exc:  # noqa: BLE001
         # Logguer la traceback COMPLÈTE (docker logs) pour diagnostiquer la
         # vraie cause (repo gated/introuvable, cache non-writable/plein, …)_
