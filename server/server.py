@@ -403,9 +403,16 @@ async def registry(task: str = "automatic-speech-recognition") -> dict:
 
         seen_ids: set[str] = set(combined.keys())
 
+        def hf_search(term: str, max_models: int) -> list:
+            # list() matérialise la pagination réseau dans le thread appelant
+            # (list_models retourne un générateur paresseux).
+            return list(api.list_models(search=term, sort="downloads",
+                                        limit=max_models))
+
         # Recherche "faster-whisper" (limit=100, tri par popularité)
-        for m in api.list_models(search="faster-whisper",
-                                 sort="downloads", limit=100):
+        # (appel réseau HF offloadé en thread : ne doit pas bloquer l'event loop)
+        for m in await anyio.to_thread.run_sync(hf_search,
+                                                "faster-whisper", 100):
             repo_id = m.id
             if repo_id not in seen_ids:
                 seen_ids.add(repo_id)
@@ -416,8 +423,8 @@ async def registry(task: str = "automatic-speech-recognition") -> dict:
         # Recherche "whisper" (limit=50) — filtrée pour ne garder que les
         # modèles qui semblent être des conversions CT2 / faster-whisper
         # (contiennent "faster-whisper" ou "whisper" dans l'ID).
-        for m in api.list_models(search="whisper",
-                                 sort="downloads", limit=50):
+        # (appel réseau HF offloadé en thread : ne doit pas bloquer l'event loop)
+        for m in await anyio.to_thread.run_sync(hf_search, "whisper", 50):
             repo_id = m.id
             rid_lower = repo_id.lower()
             if repo_id in seen_ids:
