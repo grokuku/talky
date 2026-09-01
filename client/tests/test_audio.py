@@ -21,10 +21,18 @@ from app.engine.audio import AudioRecorder, AudioRecorderError
 
 
 class Block:
-    """Bloc audio factice compatible avec le mock numpy (copy/flatten)."""
+    """Bloc audio factice compatible avec le mock numpy (copy/flatten) ET
+    le vrai numpy (via ``__array__``) : le champ ``indata`` de sounddevice
+    est un vrai ndarray, donc ``AudioRecorder.end()`` fait
+    ``np.concatenate(...)`` dessus ; ``__array__`` permet au vrai numpy de
+    convertir ce bloc en tableau 1D (le mock numpy, lui, passe par
+    ``flatten()``)."""
 
     def __init__(self, values):
         self.values = values
+
+    def __array__(self, dtype=None):
+        return np.asarray(self.values, dtype=dtype)
 
     def copy(self):
         return self

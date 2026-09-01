@@ -15,6 +15,7 @@ factice qui expose les callbacks du moteur (simulation d'un appui hotkey).
 
 import time
 
+import numpy as np
 import pytest
 
 from app.core.config import DEFAULT_CONFIG
@@ -49,10 +50,18 @@ def wait_status(engine, status, timeout=5.0):
 
 
 class Block:
-    """Bloc audio factice compatible avec le mock numpy (copy/flatten)."""
+    """Bloc audio factice compatible avec le mock numpy (copy/flatten) ET
+    le vrai numpy (via ``__array__``) : le champ ``indata`` de sounddevice
+    est un vrai ndarray, donc ``AudioRecorder.end()`` fait
+    ``np.concatenate(...)`` dessus ; ``__array__`` permet au vrai numpy de
+    convertir ce bloc en tableau 1D (le mock numpy, lui, passe par
+    ``flatten()``)."""
 
     def __init__(self, values):
         self.values = values
+
+    def __array__(self, dtype=None):
+        return np.asarray(self.values, dtype=dtype)
 
     def copy(self):
         return self
@@ -143,13 +152,15 @@ class FakeWSClient:
     script = []
     connect_result = True      # défaut classe : copié à la création de l'instance
 
-    def __init__(self, host, ws_port, model, language, uid=None, compute_type="int8"):
+    def __init__(self, host, ws_port, model, language, uid=None,
+                 compute_type="int8", server_api_key=""):
         self.host = host
         self.ws_port = ws_port
         self.model = model
         self.language = language
         self.compute_type = compute_type
         self.uid = uid or "test-uid"
+        self.server_api_key = str(server_api_key or "")
         self.error = None
         self.connect_result = bool(type(self).connect_result)
         self.connect_url = None

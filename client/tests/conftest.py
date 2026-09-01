@@ -46,6 +46,19 @@ def _install_numpy_mock() -> None:
         def __len__(self):
             return len(self._data)
 
+        def __getitem__(self, key):
+            # Tranches (ex. `arr[::3]`) : renvoie une liste Python, itérable
+            # et compatible avec le repli boucle (le vrai numpy renvoie une
+            # vue non contiguë -> `flat`).
+            return self._data[key]
+
+        def reshape(self, *shape):
+            # Le moteur (encode_wav/_pcm16_from_float) aplatit par
+            # reshape(-1)/flatten() : le mock expose un objet dont `.flatten()`
+            # renvoie toujours les données à plat, quelle que soit la shape
+            # demandée (équivalent numpy d'un `reshape(-1)`).
+            return self
+
     def _concatenate(arrays, axis=0):
         flat = []
         for arr in arrays:
@@ -821,15 +834,36 @@ def _install_fastapi_mock() -> None:
 
 # --- Installation conditionnelle, par module (« try import, sinon mock ») ---
 for _mod, _install in (
+    # numpy reste CONDITIONNEL : en environnement réel (.venv-lot2) le vrai
+    # numpy est utilisé (c'est le comportement « réel » que l'on veut valider —
+    # cf. test_encoding_pure 2D/stéréo) ; en environnement nu (.venv-bare) il
+    # est mocké.
     ("numpy", _install_numpy_mock),
     ("sounddevice", _install_sounddevice_mock),
     ("evdev", _install_evdev_mock),
     ("pyperclip", _install_pyperclip_mock),
-    ("httpx", _install_httpx_mock),
-    ("fastapi", _install_fastapi_mock),
 ):
     if not _importable(_mod):
         _install()
+
+# httpx et fastapi : mocks TOUJOURS installés en test, quel que soit
+# l'environnement, pour garder un comportement DÉTERMINISTE.
+#
+# httpx : le client HTTP de test utilise httpx.MockTransport comme « seam » ;
+# le mock reproduit fidèlement l'API httpx réellement utilisée par le code
+# (dont request.extensions["multipart"]) . Le vrai httpx 0.28 ne peuple pas
+# request.extensions["multipart"] de la même façon et n'accepte pas
+# ``transport`` sur httpx.post/get — d'où un mock toujours actif (comme
+# websockets).
+#
+# fastapi : la suite pilote les routes via le TestClient mocké (pas de
+# middleware de sécurité, ni introspections starlette). Le vrai FastAPI
+# injecte des middlewares (anti DNS-rebinding/CSRF, cf. app/api/security.py)
+# qui rejettent le Host « testserver » et expose des objets router internes
+# (``_IncludedRouter``) ; on mocke donc fastapi partout pour rester centré sur
+# la logique métier, indépendamment de la version de fastapi.
+_install_httpx_mock()
+_install_fastapi_mock()
 
 # websockets : mock TOUJOURS installé en test (pas de seam transport comme
 # httpx.MockTransport — on ne veut JAMAIS de vraie connexion WS en test).
