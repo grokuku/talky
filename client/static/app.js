@@ -58,7 +58,25 @@ function getBtnLabel(btn) {
 // Aide réseau (REST)
 // --------------------------------------------------------------------------
 async function api(url, options) {
-  const res = await fetch(url, options);
+  // Timeout 15 s sur tous les appels (AbortSignal.timeout) : une route qui
+  // mouline (téléchargement de modèle, serveur injoignable…) ne doit jamais
+  // laisser une requête pendre indéfiniment. Repli sans signal si l'API
+  // n'existe pas (anciens navigateurs) — alors pas de timeout, comme avant.
+  let opts = options || {};
+  if (typeof AbortSignal !== "undefined" && AbortSignal.timeout) {
+    opts = { ...opts, signal: AbortSignal.timeout(15000) };
+  }
+  let res;
+  try {
+    res = await fetch(url, opts);
+  } catch (err) {
+    // AbortError (timeout) : message générique, jamais de crash — remonté
+    // comme une erreur normale pour que les catch existants l'affichent.
+    if (err && err.name === "AbortError") {
+      throw new Error(`Le serveur n'a pas répondu en 15 s (${url})`);
+    }
+    throw err;
+  }
   if (!res.ok) {
     let msg = `Erreur HTTP ${res.status}`;
     try {
@@ -243,6 +261,9 @@ const STATUS_META = {
 // de statut pendant la dictée (mis à jour toutes les 500 ms, nettoyé sinon).
 let chronoTimer = null;
 let chronoStart = 0;
+// Dernier état « running » vu par updateState — pour repérer la transition
+// non-running → running (reset du pic de gain AGC de l'anneau).
+let lastRunning = false;
 
 function startChrono() {
   if (chronoTimer) return;
@@ -283,17 +304,27 @@ function updateState() {
     $("status-text").textContent = meta.label;
   }
 
-  // Bouton principal (l'anneau radial, role="switch" dans index.html) :
-  // aria-checked synchronisé avec l'état réel du moteur.
+  // Bouton power dédié (id=power-toggle) : états visuels ON/OFF synchronisés
+  // avec l'état réel du moteur (halo + glyphe coloré quand ON).
+  // ARIA : role=button ne supporte que aria-pressed (bouton bascule) — pas
+  // aria-checked (réservé aux rôles checkbox/radio/switch).
+  // L'anneau radial, lui, est un pur indicateur (plus de rôle de bouton).
   const running = !!(app.state && app.state.running);
   const toggle = $("power-toggle");
   toggle.classList.toggle("on", running);
-  toggle.setAttribute("aria-checked", String(running));
-
+  toggle.classList.toggle("off", !running);
+  toggle.setAttribute("aria-pressed", String(running));
   // Anneau radial : synchronise l'état d'enregistrement et, moteur arrêté,
   // ramène les niveaux cibles à zéro pour que les rayons redescendent au
   // minimum via le lerp existant (au lieu de rester figés sur l'anneau éteint).
   RING.recording = (status === "recording");
+  // Transition non-running → running : le pic de gain conservé pendant l'arrêt
+  // (peut être bruité/élevé du silence) repartirait trop haut et gonflerait
+  // l'anneau au démarrage. On le ramène au plancher pour une montée nette.
+  if (running && !lastRunning) {
+    RING.peak = RING.floor;
+  }
+  lastRunning = running;
   if (!running) {
     RING.levels = RING.levels.map(() => 0);
   }
@@ -305,6 +336,10 @@ function updateState() {
   // pendant l'enregistrement (et masquée sinon). Quand l'enregistrement
   // s'arrête (success/ready/error/idle), on vide la zone.
   syncLiveTranscript(status);
+
+  // Le changement d'état peut varier la hauteur (live-transcript, badge) :
+  // on re-calcule le zoom global.
+  scheduleFitZoom();
 }
 
 function updateMotorInfo() {
@@ -345,6 +380,7 @@ function renderConfig() {
   if ($("hotkey-pick")) $("hotkey-pick").textContent = c.hotkey || "—";
   if ($("hero-hotkey")) $("hero-hotkey").textContent = c.hotkey || "—";
   updateHeroMicLabel();
+  scheduleFitZoom();
 }
 
 // Version « prudente » : ne touche pas aux champs en cours de saisie
@@ -478,11 +514,17 @@ async function togglePower() {
 }
 
 async function restartEngine() {
+  const btn = $("btn-restart");
+  // Garde anti-double-clic : désactive pendant l'await du fetch, réactivé en
+  // finally (identique à togglePower — un restart prend du temps côté serveur).
+  if (btn) btn.disabled = true;
   try {
     await api("/api/engine/restart", { method: "POST" });
     showToast("Redémarrage du moteur en cours…");
   } catch (err) {
     showToast(`Erreur : ${err.message}`);
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -923,6 +965,9 @@ function renderHistory() {
   // La carte héro reflète toujours la transcription la plus récente.
   updateHeroLast();
 
+  // Le nombre d'entrées change la hauteur → re-calcule le zoom global.
+  scheduleFitZoom();
+
   if (!app.history.length) {
     const li = document.createElement("li");
     li.className = "history-empty";
@@ -1111,9 +1156,14 @@ function initConfirmModal() {
 // Rendu : 36 rayons autour d'un cercle central (canvas 150×150, DPR géré).
 //   - les 64 niveaux sont regroupés en 36 rayons (RMS par groupe, valeurs
 //     absolues) ;
+//   - auto-gain glissant (peak-hold ~4 s) : la voix normale (RMS 0.05–0.15)
+//     est normalisée par le pic récent → les rayons oscillent nettement entre
+//     ~30 et ~90 % de leur longueur ; attaque rapide / relâchement lent pour
+//     éviter le pompage ;
+//   - courbe gamma v^0.55 pour rendre les petites amplitudes visibles ;
+//   - longueur d'un rayon = base 5 px + valeur × ~34 px (amplitude max plus
+//     grande), depuis un rayon interne ~40 px ;
 //   - lissage lerp 0.35 en rAF (60 fps) ;
-//   - longueur d'un rayon = base 5 px + valeur × ~30 px, depuis un rayon
-//     interne ~40 px ;
 //   - couleurs --accent / --accent-glow lues à chaque frame via
 //     getComputedStyle(document.body) → thématisation automatique par état
 //     (body[data-status]) ;
@@ -1128,9 +1178,14 @@ const RING = {
   size: 150,          // taille CSS du canvas (px)
   rays: 36,           // nombre de rayons
   base: 5,            // longueur de base d'un rayon (px CSS)
-  amp: 30,            // valeur × amp = longueur additionnelle (px CSS)
+  amp: 34,            // valeur × amp = longueur additionnelle (px CSS)
   inner: 40,          // rayon interne (px CSS)
   lerp: 0.35,         // interpolation des niveaux affichés
+  // Auto-gain glissant : pic RMS récent normalisant les niveaux.
+  peak: 0,            // pic RMS courant (value, 0..1) — peak-hold
+  floor: 0.015,       // plancher (bruit/silence) soustrait avant normalisation
+  release: 0.035,     // relâchement / frame (~3-4 s : 0.15 → plancher)
+  gamma: 0.55,        // courbe de réponse v^gamma (petites amplitudes visibles)
   levels: [],         // niveaux cibles 0..1 (36)
   disp: [],           // niveaux affichés (interpolés)
   recording: false,   // enregistrement en cours (dernier événement reçu)
@@ -1157,7 +1212,17 @@ function initRing() {
 
 function resizeRing() {
   if (!RING.canvas) return;
-  RING.dpr = window.devicePixelRatio || 1;
+  // Netteté à zoom CSS >1 : on compose le DPR avec le zoom courant du
+  // conteneur (.layout) pour re-rasteriser le canvas à la bonne résolution.
+  // getComputedStyle().zoom retourne "" en repli transform scale → parseFloat
+  // = NaN → on retombe sur 1 (comportement d'avant).
+  const layout = document.querySelector(".layout");
+  let zoom = 1;
+  if (layout) {
+    const z = parseFloat(getComputedStyle(layout).zoom);
+    if (Number.isFinite(z) && z > 0) zoom = z;
+  }
+  RING.dpr = (window.devicePixelRatio || 1) * zoom;
   const w = Math.max(1, Math.floor(RING.size * RING.dpr));
   if (RING.canvas.width !== w || RING.canvas.height !== w) {
     RING.canvas.width = w;
@@ -1184,6 +1249,51 @@ function groupRingLevels(levels) {
   return out;
 }
 
+// Auto-gain glissant + courbe gamma appliqués à un groupe de niveaux RMS 0..1.
+//
+// Principe audio-classique peak-hold : on maintient un pic RMS récent
+// (fenêtre ~4 s) — montée immédiate si le pic dépasse (attaque rapide),
+// décroissance lente sinon (relâchement). Chaque niveau est ensuite normalisé
+// par ce pic : la voix normale (RMS ~0.05–0.15) remplit ainsi toute la plage et
+// les rayons oscillent nettement entre ~30 et ~90 % de leur longueur. Le
+// plancher (RING.floor) est soustrait comme un passe-haut : en silence pur les
+// rayons restent au minimum (pas de bruit amplifié). Une courbe gamma v^0.55
+// rehausse encore les petites amplitudes. Aucun pompage : l'attaque monte vite
+// mais la référence ne retombe que lentement.
+function adaptiveGain(out) {
+  const f = RING.floor;
+  // Pic du frame courant (la plus forte amplitude parmi les rayons).
+  let framePeak = 0;
+  for (let i = 0; i < out.length; i++) if (out[i] > framePeak) framePeak = out[i];
+  framePeak = Math.max(framePeak, f);
+
+  // Attaque rapide : le pic s'aligne immédiatement s'il dépasse la référence.
+  if (framePeak > RING.peak) {
+    RING.peak = framePeak;
+  } else {
+    // Relâchement lent : décroissance ~ -3,5 % / frame → fenêtre ~4 s.
+    RING.peak *= (1 - RING.release);
+  }
+  // Cap du gain : au repos le plancher bruité du micro peut faire monter le pic
+  // jusqu'à >1 et normaliser le bruit ambiant à pleine échelle, saturant
+  // l'anneau même en silence. On borne le gain à ~0.06 : le bruit reste près du
+  // minimum, seule une vraie voix (RMS nettement plus haut) remplit les rayons.
+  const g = Math.min(Math.max(RING.peak, f), 0.06);
+  const span = g - f;
+  if (span <= 0) {
+    for (let i = 0; i < out.length; i++) out[i] = 0;
+    return out;
+  }
+  for (let i = 0; i < out.length; i++) {
+    // Passe-haut (soustraire le plancher) puis normalisation par l'étendue.
+    const above = out[i] - f;
+    let v = above > 0 ? above / span : 0;
+    if (v > 1) v = 1;
+    out[i] = Math.pow(v, RING.gamma);
+  }
+  return out;
+}
+
 function handleAudio(data) {
   if (!RING.canvas) initRing();
   if (!RING.canvas) return;
@@ -1192,7 +1302,7 @@ function handleAudio(data) {
   if (!levels) return;
 
   RING.recording = !!(data && data.recording);
-  RING.levels = groupRingLevels(levels);
+  RING.levels = adaptiveGain(groupRingLevels(levels));
   RING.dirty = true;
 }
 
@@ -1497,6 +1607,91 @@ function initHotkeyCapture() {
 }
 
 // --------------------------------------------------------------------------
+// Zoom global automatique « fit-vp » : la page s'adapte à la hauteur de la
+// fenêtre SANS scroll, par un zoom CSS appliqué au conteneur principal.
+//   - zoom = clamp(hauteur_dispo / hauteur_naturelle, 0.85, 1.6) ;
+//   - `zoom` CSS supporté (Chromium + Firefox ≥ v126) ; sinon repli transform
+//     scale (approx. : largeur compensée) ;
+//   - recalcule debouncé (150 ms) sur resize ET après tout rendu qui change la
+//     hauteur (renderHistory, updateState, config) ;
+//   - si le contenu dépasse même au zoom min (0.85) → on laisse le scroll
+//     normal, on n'écrase jamais le contenu.
+// Sans JS (ou .fit-vp absent) : comportement scroll normal existant.
+// --------------------------------------------------------------------------
+let fitZoomTimer = null;
+
+function zoomSupported() {
+  return "zoom" in document.body.style;
+}
+
+// Planifie un re-calcul debouncé (les rendus successifs n'empilent pas).
+function scheduleFitZoom() {
+  if (fitZoomTimer) clearTimeout(fitZoomTimer);
+  fitZoomTimer = setTimeout(fitZoom, 150);
+}
+
+function fitZoom() {
+  const layout = document.querySelector(".layout");
+  if (!layout || !document.body.classList.contains("fit-vp")) return;
+
+  // 1) Rétablir la taille naturelle (zoom=1, hauteur auto) pour la mesure.
+  layout.style.zoom = "1";
+  layout.style.transform = "";
+  layout.style.width = "";
+  layout.style.height = "auto";
+
+  const tbEl = document.querySelector(".topbar");
+  const topbar = tbEl ? tbEl.offsetHeight : 64;
+  const available = Math.max(220, window.innerHeight - topbar - 32);
+  const natural = layout.offsetHeight || available;
+
+  // 2) Échelle cible bornée [0.85, 1.6].
+  const MIN = 0.85, MAX = 1.6;
+  let scale = available / natural;
+  if (scale > MAX) scale = MAX;
+  if (scale < MIN) scale = MIN;
+
+  // 3) Même au zoom min on déborde encore → scroll normal, pas de hauteur
+  //    verrouillée (on ne masque pas de contenu).
+  if (natural * MIN > available) {
+    layout.style.zoom = "1";
+    layout.style.transform = "";
+    layout.style.width = "";
+    layout.style.height = "auto";
+    return;
+  }
+
+  // 4) Verrouiller la hauteur du conteneur : le zoom standardisé MULTIPLIE
+  //    les longueurs RENDUES (la boîte rendue fait layout × zoom). En fixant
+  //    la hauteur à available/scale, une fois multipliée par le zoom elle
+  //    occupe exactement l'espace disponible — sinon la page déborderait d'un
+  //    facteur scale. Le repli transform fonctionne pareil (le scale agit sur
+  //    le rendu final), d'où la largeur élargie inversement pour compenser.
+  const lockH = Math.max(1, Math.round(available / scale));
+  if (zoomSupported()) {
+    layout.style.height = lockH + "px";
+    layout.style.zoom = String(scale);
+  } else {
+    layout.style.height = lockH + "px";
+    layout.style.transformOrigin = "top center";
+    layout.style.transform = "scale(" + scale + ")";
+    layout.style.width = (100 / scale) + "%";
+  }
+}
+
+// Réinitialise les styles inline de hauteur/zoom posés par fitZoom (quand la
+// classe .fit-vp est retirée, ex. passage sous 1024 px) → retour au scroll
+// horizontal normal sans traîner une hauteur verrouillée invalide.
+function clearFitZoom() {
+  const layout = document.querySelector(".layout");
+  if (!layout) return;
+  layout.style.zoom = "";
+  layout.style.transform = "";
+  layout.style.width = "";
+  layout.style.height = "";
+}
+
+// --------------------------------------------------------------------------
 // Initialisation
 // --------------------------------------------------------------------------
 function bindEvents() {
@@ -1599,6 +1794,27 @@ function init() {
   _initComboboxEvents();
   initLoad();
   connectWS();
+
+  // Zoom global auto : le mode « fit-vp » n'existe que sur DESKTOP (≥1024 px).
+  // Sur mobile/tablette on garde le scroll normal (le CSS est lui-même borné
+  // par @media). On bascule la classe via matchMedia et on repère le passage
+  // de la bordure au resize pour ajouter/retirer la classe + recalculer ; si
+  // la classe est retirée on purge les styles inline posés par fitZoom.
+  const fitVpMq = window.matchMedia("(min-width: 1024px)");
+  const applyFitVp = () => {
+    const on = fitVpMq.matches;
+    document.body.classList.toggle("fit-vp", on);
+    if (!on) clearFitZoom();
+    scheduleFitZoom();
+  };
+  applyFitVp();
+  if (typeof fitVpMq.addEventListener === "function") {
+    fitVpMq.addEventListener("change", applyFitVp);
+  } else if (typeof fitVpMq.addListener === "function") {
+    fitVpMq.addListener(applyFitVp);   // anciens navigateurs (Safari < 14)
+  }
+  window.addEventListener("resize", scheduleFitZoom);
+  scheduleFitZoom();
 
   // Polling du badge serveur toutes les 5 s (pauses si l'onglet est caché)
   loadServerStatus();

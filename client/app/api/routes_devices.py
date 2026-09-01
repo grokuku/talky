@@ -10,6 +10,8 @@ sounddevice (_InputOutputPair, ...) ne sont pas sérialisables par JSON.
 ``to_int`` (app/models/schemas.py) blinde la conversion.
 """
 
+import asyncio
+
 from fastapi import APIRouter
 
 from app.core.logging import get_logger
@@ -25,7 +27,10 @@ async def audio_devices() -> dict:
         import sounddevice as sd
 
         try:
-            device_list = list(sd.query_devices())
+            # sd.query_devices() interroge PortAudio (I/O système bloquante) :
+            # on la sort de la boucle d'événements via asyncio.to_thread pour
+            # ne pas geler la réponse WS/polling UI le temps de l'interrogation.
+            device_list = list(await asyncio.to_thread(sd.query_devices))
         except Exception:  # noqa: BLE001 — PortAudio indisponible
             device_list = []
 

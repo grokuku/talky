@@ -400,6 +400,44 @@ body::before {
   .col-side { display: flex; flex-direction: column; gap: 0.75rem; min-width: 0; }
 }
 
+/* =========================================================================
+ * Zoom global automatique « fit-vp » (activé par app.js → scheduleFitZoom).
+ * La page s'adapte à la hauteur de la fenêtre SANS scroll : le conteneur
+ * principal (.layout) passe en flex remplissant la hauteur, la colonne de
+ * configuration (droite, .col-side) scrolle EN INTERNE, la colonne gauche
+ * (hub + historique, .col-main) reste compacte avec son propre scroll
+ * d'historique. La hauteur du conteneur est verrouillée en JS (style.height)
+ * pour coller au zoom CSS : sans JS (ou .fit-vp absent) → scroll normal.
+ * Uniquement sur écran DESKTOP (≥1024 px) : sur mobile/tablette on garde le
+ * scroll normal (le contenu ne doit jamais être écrasé).
+ * ========================================================================= */
+@media (min-width: 1024px) {
+body.fit-vp .layout {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 1.25rem;
+  overflow: hidden;
+}
+body.fit-vp .layout > .col-main {
+  flex: 3 1 0;
+  min-width: 0;
+  min-height: 0;
+  position: static;
+  top: auto;
+  height: auto;
+  overflow: hidden;
+}
+body.fit-vp .layout > .col-side {
+  flex: 2 1 0;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-bottom: 2rem;
+}
+}
+
 /* Panneau latéral : deux colonnes de cartes (toujours à droite) */
 .side-cols {
   display: grid;
@@ -498,7 +536,7 @@ body::before {
 }
 body[data-status="recording"] .hero-card::before { opacity: 0.9; }
 
-/* Hub V1 : anneau radial (bouton principal) à gauche + colonne info à droite */
+/* Hub V1 : anneau radial (indicateur pur) à gauche + colonne info à droite */
 .hub {
   display: flex;
   align-items: center;
@@ -506,26 +544,21 @@ body[data-status="recording"] .hero-card::before { opacity: 0.9; }
   flex-wrap: wrap;
 }
 
-/* Bouton principal : l'anneau radial (start/stop moteur) */
-.ring-btn {
+/* Anneau radial : INDICATEUR pur du niveau micro (non cliquable). Le
+   start/stop se fait via le bouton power dédié #power-toggle. */
+.ring-indicator {
   position: relative;
   width: 150px;
   height: 150px;
-  border: none;
-  background: transparent;
-  padding: 0;
-  cursor: pointer;
   flex-shrink: 0;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
+  cursor: default;
+  user-select: none;
 }
-.ring-btn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
-}
-.ring-btn .ring-mic {
+.ring-indicator .ring-mic {
   position: absolute;
   top: 50%;
   left: 50%;
@@ -536,16 +569,44 @@ body[data-status="recording"] .hero-card::before { opacity: 0.9; }
   pointer-events: none;
   transition: color var(--t-med) var(--ease);
 }
-.ring-btn .ring-mic svg { width: 26px; height: 26px; }
-.ring-btn .ring-hint {
-  position: absolute;
-  left: 0; right: 0;
-  bottom: -1.1rem;
-  text-align: center;
-  font-size: 0.66rem;
-  color: var(--text-faint);
-  white-space: nowrap;
-  pointer-events: none;
+.ring-indicator .ring-mic svg { width: 26px; height: 26px; }
+
+/* Bouton power dédié (start/stop moteur) : rond ~44 px, glyphe ⏻. */
+.power-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-dim);
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+  transition: background var(--t-fast) var(--ease),
+              color var(--t-fast) var(--ease),
+              border-color var(--t-fast) var(--ease),
+              box-shadow var(--t-fast) var(--ease),
+              transform 120ms var(--ease);
+}
+.power-toggle svg { width: 20px; height: 20px; }
+.power-toggle:hover { background: rgba(255, 255, 255, 0.14); color: var(--text); }
+.power-toggle:active { transform: scale(0.94); }
+.power-toggle:disabled { opacity: 0.45; pointer-events: none; }
+.power-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* ON : halo + glyphe teints par --accent (theming par état), plus de mint
+   codé en dur — l'anneau de confiance suit le même accent que le reste. */
+.power-toggle.on {
+  color: var(--accent);
+  border-color: var(--accent-glow);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  box-shadow: 0 0 16px var(--accent-glow);
+}
+.power-toggle.on:hover {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 #audio-canvas {
   display: block;
@@ -617,14 +678,9 @@ body[data-status="recording"] .hero-card::before { opacity: 0.9; }
 }
 .hero-last-text.empty { font-style: italic; }
 
-/* Ligne raccourci : chip kbd + « ou cliquer sur l'anneau » */
+/* Ligne raccourci : chip hotkey de la dictée */
 .hub-hint {
   flex-wrap: wrap;
-}
-.hub-hint-or {
-  font-size: 0.74rem;
-  color: var(--text-faint);
-  font-style: italic;
 }
 .hotkey-chip {
   display: inline-flex;

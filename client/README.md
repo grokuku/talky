@@ -197,11 +197,18 @@ login** (hotkeys actives dès la session). Sans `auto_start`, cliquez sur
 - Le panneau web montre en temps réel : l'état du moteur (ready / recording /
   transcribing / success / error), l'historique des transcriptions, la config et
   le **statut du serveur** (modèle, device `cuda`, compute_type `int8`).
-- **Anneau radial « V1 Hub »** : l'anneau au centre de la carte héro est le
-  bouton principal — un clic démarre/arrête le moteur (équivalent de l'ancien
-  interrupteur). Ses 36 rayons reflètent le niveau du micro en temps réel
-  (couleurs par état, halo pendant l'enregistrement) et le badge de statut
-  affiche un chrono « Enregistrement · MM:SS » pendant la dictée.
+- **Anneau radial « V1 Hub »** : l'anneau au centre de la carte héro est un
+  **indicateur pur** (non cliquable) du niveau du micro — ses 36 rayons reflètent
+  l'activité en temps réel (auto-gain glissant + courbe gamma : la voix normale
+  fait osciller les rayons entre ~30 et ~90 % de leur longueur, couleurs par état,
+  halo pendant l'enregistrement). Le **démarrage/arrêt du moteur** se fait via le
+  **bouton power dédié** (rond à glyphe ⏻, à droite de la ligne « Micro ») ; son
+  état visuel (halo menthe) suit l'état réel du moteur. Le badge de statut affiche
+  un chrono « Enregistrement · MM:SS » pendant la dictée.
+- **Zoom global automatique** : la page s'adapte à la hauteur de la fenêtre **sans
+  scroll** (zoom CSS auto, borné 0.85–1.6, re-calculé sur resize et après chaque
+  rendu) ; la colonne de configuration scrolle en interne si nécessaire. Sans
+  JavaScript, le comportement scroll normal est conservé.
 
 ## 7. Dépannage
 

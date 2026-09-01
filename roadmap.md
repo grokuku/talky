@@ -301,11 +301,14 @@ factory.py build_app() + lifespan + /static + / → index.html. dependencies.py 
 
 > Les routes `/api/server/registry` et `/api/server/models/download` (speaches) ont été **supprimées** : whisper-live n'a ni registry ni installation de modèles (le modèle est fixé par `WHISPERLIVE_MODEL`).
 
+> **Gel UI corrigé** : les actions moteur (`start`/`stop`/`restart`) ainsi qu'`apply_config` (qui peut redémarrer via stop+join) sont offloadées via `asyncio.to_thread` dans les routes async — `engine.stop()` fait du join() bloquant (jusqu'à ~4 s) qui gèlerait la boucle uvicorn (WS `/ws` + polling morts = interface figée).
+
 ### 5.11 Frontend
 Design verre (palette #141821, mint/sky/lavender/peach/rose). **Mise en page pleine largeur, 2 colonnes.**
 
 **Fonctionnalités implémentées (certaines non prévues au roadmap initial) :**
-- **Anneau radial « V1 Hub »** ✅ : visualisation du niveau du micro (~64 valeurs, 20 fps) reçue via WebSocket (événement `audio`) — 36 rayons autour d'un cercle central (RMS par groupe, lerp 0.35 en rAF, canvas 150×150 avec DPR), couleurs `--accent`/`--accent-glow` par état, halo en enregistrement, rayons minimaux + opacité réduite au repos. L'anneau est le bouton principal start/stop (role=switch). Remplace l'ancienne waveform à barres miroir.
+- **Anneau radial « V1 Hub »** ✅ : visualisation du niveau du micro (~64 valeurs, 20 fps) reçue via WebSocket (événement `audio`) — 36 rayons autour d'un cercle central (RMS par groupe, lerp 0.35 en rAF, canvas 150×150 avec DPR), couleurs `--accent`/`--accent-glow` par état, halo en enregistrement, rayons minimaux + opacité réduite au repos. **Auto-gain glissant (peak-hold ~4 s) + courbe gamma v^0.55 + amplitude max 34 px** : la voix normale (RMS 0,05–0,15) fait osciller les rayons nettement (~30–90 %). L'anneau est un **indicateur pur non cliquable** (role="img", plus de role=switch) ; le start/stop se fait via un **bouton power dédié** (#power-toggle, rond ~44 px, glyphe ⏻, halo menthe quand moteur ON) placé avant #btn-restart. Remplace l'ancienne waveform à barres miroir.
+- **Zoom global automatique (fit-vp)** ✅ : la page s'adapte à la hauteur de la fenêtre **sans scroll** — zoom CSS auto borné [0.85, 1.6] sur le conteneur `.layout` (repli transform si `zoom` non supporté), re-calcul debouncé (150 ms) sur resize et après chaque rendu (renderHistory/updateState/config) ; colonne config scrolle en interne, colonne gauche compacte. Sans JS → scroll normal conservé.
 - **Sélecteur de modèle** ✅ : datalist alimentée par `/api/server/status` + presets usuels (saisie libre). **Plus d'installation de modèles côté UI** (modèle fixé par `WHISPERLIVE_MODEL` côté serveur).
 - **Zone « Transcription en direct »** ✅ : affichage des transcriptions partielles/finales en mode continu (événement `partial_transcript` via WebSocket).
 - **Toggle mode continu** ✅ : bascule entre mode batch et mode continu (continuous_mode dans la config).
@@ -409,16 +412,19 @@ l'anneau radial « V1 Hub » validé en mockup : 36 rayons autour d'un cercle
 central (canvas 150×150, DPR géré), regroupement RMS des 64 niveaux du payload
 `audio`, lissage lerp 0.35 en rAF, couleurs `--accent`/`--accent-glow` lues à
 chaque frame (thématisation par état), halo uniquement en enregistrement,
-rayons au minimum + opacité réduite quand moteur arrêté. L'anneau est le bouton
-principal start/stop (`#power-toggle`, role=switch).
+rayons au minimum + opacité réduite quand moteur arrêté. L'anneau est un
+indicateur **pur** non cliquable ; le start/stop se fait via le **bouton power
+dédié** (`#power-toggle`, rond ~44 px, glyphe ⏻, halo menthe quand moteur ON).
 
 **Ce qui existe** :
 - Anneau radial 36 rayons (RMS par groupe, valeurs absolues) ✅
+- **Auto-gain glissant + gamma** : voix normale → rayons ~30–90 % ✅
 - Lissage lerp 0.35 en rAF + DPR ✅
 - Couleurs `--accent`/`--accent-glow` par état (getComputedStyle) ✅
 - Halo en enregistrement, rayons minimaux + opacité réduite au repos ✅
 - Chrono « Enregistrement · MM:SS » dans le badge de statut ✅
-- Clic sur l'anneau = start/stop moteur (aria-checked synchronisé) ✅
+- **Bouton power séparé** (#power-toggle, rond ~44 px, glyphe ⏻, halo menthe quand ON) ✅
+- **Zoom global automatique (fit-vp)** : page fit à la hauteur de la fenêtre sans scroll ✅
 
 **À faire** :
 - Aucun (le style « sismographe défilant » n'est plus retenu).
@@ -467,6 +473,6 @@ Le dossier `ref/` (projet Windows original qui a servi d'inspiration initiale) a
 ## 12. Prochaines étapes suggérées
 
 1. **Mode continu WebSocket WhisperLive validé en E2E réel** ✅ (fait lors de la migration) : dictée longue avec F8 maintenu → texte qui apparaît pendant l'enregistrement (partial_transcript, VAD serveur) → injection propre à la relâche ; coupure serveur en cours de dictée → fallback batch + message clair ; toggle continuous_mode à chaud.
-2. **Visualisation audio — anneau radial « V1 Hub »** ✅ (fait le 2025-06-10) : la courbe sismographe défilante est remplacée par l'anneau radial validé en mockup — 36 rayons (RMS des 64 niveaux, lerp 0.35 en rAF), canvas 150×150 avec DPR, couleurs `--accent`/`--accent-glow` par état, halo en enregistrement, rayons minimaux + opacité réduite au repos, chrono « Enregistrement · MM:SS », l'anneau est le bouton principal start/stop (role=switch, aria-checked synchronisé).
+2. **Visualisation audio — anneau radial « V1 Hub »** ✅ : la courbe sismographe défilante est remplacée par l'anneau radial validé en mockup — 36 rayons (RMS des 64 niveaux, lerp 0.35 en rAF), canvas 150×150 avec DPR, couleurs `--accent`/`--accent-glow` par état, halo en enregistrement, rayons minimaux + opacité réduite au repos, chrono « Enregistrement · MM:SS ». **Évolutions (retour réel)** : l'anneau devient un **indicateur pur** (auto-gain glissant + gamma → voix normale ~30–90 %, non cliquable) et le start/stop passe sur un **bouton power dédié** (#power-toggle, glyphe ⏻, halo menthe quand ON) ; ajout du **zoom global automatique (fit-vp)** pour adapter la page à la hauteur de la fenêtre sans scroll.
 3. **Finaliser le frontend** ⏳ : dernière passe sur le panneau après la migration (suppression des références « registry/installation de modèles » restantes côté UI, libellés whisper-live).
 4. **Éventuel retour au WebSocket Realtime speaches** : non prévu — le WebSocket WhisperLive natif couvre le besoin (VAD serveur temps réel). Si speaches corrigeait un jour le bug #567, ce ne serait pas une priorité : whisper-live est désormais la cible verrouillée.

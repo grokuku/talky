@@ -10,7 +10,7 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%23141821'/%3E%3Cpath d='M12 5.2a2.3 2.3 0 0 0-2.3 2.3v4.2a2.3 2.3 0 0 0 4.6 0V7.5A2.3 2.3 0 0 0 12 5.2z' fill='%238ff0c4'/%3E%3Cpath d='M7.1 10.8v1a4.9 4.9 0 0 0 9.8 0v-1' stroke='%239cd6ff' stroke-width='1.6' fill='none' stroke-linecap='round'/%3E%3Cpath d='M12 18.2v2.3' stroke='%239cd6ff' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E" />
   <!-- Inter self-hostée (variable 100-900, sous-ensembles latin + latin-ext) -->
   <link rel="preload" href="/static/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin />
-  <link rel="stylesheet" href="/static/style.css?v=20" />
+  <link rel="stylesheet" href="/static/style.css?v=22" />
 </head>
 <body data-status="idle">
 
@@ -44,7 +44,7 @@
     </div>
   </header>
 
-  <main class="container main-grid">
+  <main class="container main-grid layout">
 
     <!-- ===================== COLONNE GAUCHE ===================== -->
     <section class="col-main">
@@ -52,11 +52,11 @@
       <!-- ===== CARTE HÉRO : anneau radial (bouton principal), statut, hotkey, dernière dictée ===== -->
       <section class="hero-card glass" aria-label="Studio de dictée">
         <div class="hub">
-          <!-- Anneau radial : bouton principal start/stop (role=switch) -->
-          <button id="power-toggle" type="button" class="ring-btn" role="switch" aria-checked="false"
-                  aria-label="Démarrer ou arrêter le moteur" title="Démarrer / arrêter le moteur">
-            <canvas id="audio-canvas" width="150" height="150" role="img"
-                    aria-label="Visualisation du niveau du micro : anneau radial temps réel"></canvas>
+          <!-- Anneau radial : indicateur PUR du niveau micro — non cliquable.
+               Le start/stop se fait via le bouton power dédié #power-toggle. -->
+          <div class="ring-indicator" role="img"
+               aria-label="Visualisation du niveau du micro : anneau radial temps réel, non cliquable">
+            <canvas id="audio-canvas" width="150" height="150" aria-hidden="true"></canvas>
             <span class="ring-mic" aria-hidden="true">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                    stroke-linecap="round" stroke-linejoin="round">
@@ -65,14 +65,23 @@
                 <line x1="12" y1="19" x2="12" y2="22"/>
               </svg>
             </span>
-            <span class="ring-hint">cliquer · démarrer / arrêter</span>
-          </button>
+          </div>
 
           <!-- Colonne info -->
           <div class="hub-info">
             <div class="hub-line hub-mic">
               <span class="hub-mic-label">Micro</span>
               <span id="hero-mic-name" class="hero-mic-name">Micro par défaut</span>
+              <!-- Bouton power dédié (start/stop moteur), visible et cliquable -->
+              <button id="power-toggle" type="button" class="power-toggle"
+                      aria-label="Démarrer ou arrêter le moteur"
+                      title="Démarrer ou arrêter le moteur" aria-pressed="false">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M18.36 6.64a9 9 0 1 1-12.73 0"/>
+                  <line x1="12" y1="2" x2="12" y2="12"/>
+                </svg>
+              </button>
               <button id="btn-restart" class="icon-btn" title="Redémarrer le moteur"
                       aria-label="Redémarrer le moteur">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
@@ -111,7 +120,6 @@
               <span class="hotkey-chip" title="Raccourci clavier de la dictée">
                 <kbd id="hero-hotkey">—</kbd><span>pour dicter</span>
               </span>
-              <span class="hub-hint-or">ou cliquer sur l'anneau</span>
             </div>
           </div>
         </div>
@@ -411,6 +419,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20"></script>
+  <script src="/static/app.js?v=22"></script>
 </body>
 </html>

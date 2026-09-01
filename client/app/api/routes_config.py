@@ -10,6 +10,8 @@ ex. audio_device) et ``live_changed`` (liste des champs HOT_FIELDS
 appliqués à chaud par engine.apply_config).
 """
 
+import asyncio
+
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
@@ -21,7 +23,9 @@ router = APIRouter(prefix="/api/config", tags=["config"])
 
 @router.get("")
 async def get_config() -> dict:
-    return load_config()
+    # load_config fait de l'I/O disque (config.json) : on le sort de la boucle
+    # d'événements pour ne jamais la geler (polling UI + WS temps réel).
+    return await asyncio.to_thread(load_config)
 
 
 @router.post("")
@@ -44,13 +48,22 @@ async def set_config(payload: dict) -> JSONResponse:
     # (m10) Ne conserver que les clés connues de DEFAULT_CONFIG.
     payload = {k: v for k, v in payload.items() if k in DEFAULT_CONFIG}
     try:
-        new_cfg = validate_config(load_config() | payload)
+        # (offload) lecture disque (config.json) sortie de la boucle d'événements.
+        loaded = await asyncio.to_thread(load_config)
+        new_cfg = validate_config(loaded | payload)
         if new_cfg.get("language") is None:
             new_cfg["language"] = "auto"  # stocké explicitement dans config.json
         # (M2) apply_config d'abord : valide + installe les hotkeys en
         # mémoire ; échec -> ValueError propagée, rien n'est écrit.
-        reload_needed, live_changed = engine.apply_config(new_cfg)
-        save_config(new_cfg)
+        # NOTE (gel UI) : apply_config peut déclencher engine.restart()
+        # (ex. changement d'audio_device avec moteur actif) — stop()+join des
+        # threads est bloquant (§5.9), on l'offload via asyncio.to_thread pour
+        # ne jamais geler la boucle d'événements uvicorn (WS + polling UI).
+        reload_needed, live_changed = await asyncio.to_thread(
+            engine.apply_config, new_cfg)
+        # (offload) persistance disque (config.json) : même raison — jamais
+        # d'I/O bloquant dans la boucle d'événements.
+        await asyncio.to_thread(save_config, new_cfg)
         return JSONResponse({
             "saved": True,
             "reload_needed": reload_needed,
