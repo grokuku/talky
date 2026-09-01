@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="theme-color" content="#141821" />
+  <title>Talky — Dictée vocale</title>
+  <!-- Favicon inline (aucune requête réseau, mic sur fond sombre) -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%23141821'/%3E%3Cpath d='M12 5.2a2.3 2.3 0 0 0-2.3 2.3v4.2a2.3 2.3 0 0 0 4.6 0V7.5A2.3 2.3 0 0 0 12 5.2z' fill='%238ff0c4'/%3E%3Cpath d='M7.1 10.8v1a4.9 4.9 0 0 0 9.8 0v-1' stroke='%239cd6ff' stroke-width='1.6' fill='none' stroke-linecap='round'/%3E%3Cpath d='M12 18.2v2.3' stroke='%239cd6ff' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E" />
+  <!-- Inter self-hostée (variable 100-900, sous-ensembles latin + latin-ext) -->
+  <link rel="preload" href="/static/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="stylesheet" href="/static/style.css?v=20" />
+</head>
+<body data-status="idle">
+
+  <noscript>
+    <div class="noscript-banner">
+      JavaScript est désactivé : le panneau Talky (temps réel, réglages, historique)
+      nécessite JavaScript pour fonctionner. Veuillez l'activer puis recharger la page.
+    </div>
+  </noscript>
+
+  <!-- Région d'annonce ARIA (nouveaux transcripts, copie, vidage d'historique) -->
+  <p id="live-region" class="sr-only" role="status" aria-live="polite"></p>
+
+  <!-- ===================== EN-TÊTE (verre) ===================== -->
+  <header class="topbar">
+    <div class="container topbar-inner">
+      <div class="brand">
+        <div class="brand-logo" aria-hidden="true">T</div>
+        <div>
+          <h1>Talky — Dictée vocale</h1>
+          <p class="brand-sub">faster-whisper · CUDA · 100% hors-ligne</p>
+        </div>
+      </div>
+
+      <div class="topbar-actions">
+        <!-- Badge serveur (polling 5 s) -->
+        <span id="server-badge-header" class="server-badge off" title="État de la connexion au serveur de transcription">
+          <span class="dot"></span><span id="server-badge-text-header">Déconnecté</span>
+        </span>
+      </div>
+    </div>
+  </header>
+
+  <main class="container main-grid">
+
+    <!-- ===================== COLONNE GAUCHE ===================== -->
+    <section class="col-main">
+
+      <!-- ===== CARTE HÉRO : micro, état, waveform, hotkey, dernière dictée ===== -->
+      <section class="hero-card glass" aria-label="Studio de dictée">
+        <div class="hero-top">
+          <div class="hero-identity">
+            <span class="hero-mic-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                   stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                <line x1="12" y1="19" x2="12" y2="22"/>
+              </svg>
+            </span>
+            <div class="hero-title">
+              <h2>Micro</h2>
+              <p class="hero-mic-name" id="hero-mic-name">Micro par défaut</p>
+            </div>
+          </div>
+
+          <div class="hero-controls">
+            <!-- Badge de statut moteur -->
+            <span id="status-badge" class="status-badge" title="État du moteur de dictée">
+              <span id="status-dot" class="status-dot"></span>
+              <span id="status-text">Hors ligne</span>
+            </span>
+
+            <!-- Interrupteur On/Off (role=switch, aria-checked piloté par app.js) -->
+            <button id="power-toggle" role="switch" aria-checked="false" aria-label="Démarrer ou arrêter le moteur"
+                    class="switch" title="Démarrer / arrêter le moteur">
+              <span id="power-knob" class="switch-knob"></span>
+            </button>
+
+            <!-- Redémarrer -->
+            <button id="btn-restart" class="btn ghost" title="Redémarrer le moteur">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M23 4v6h-6"/><path d="M1 20v-6h6"/>
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+              </svg>
+              <span class="btn-label">Redémarrer</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Waveform à barres miroir (canvas redimensionné par app.js via rAF) -->
+        <div class="hero-wave">
+          <canvas id="audio-canvas" width="600" height="76" role="img"
+                  aria-label="Visualisation du niveau du micro : waveform à barres, temps réel pendant la dictée"></canvas>
+          <span id="audio-placeholder" class="audio-placeholder" aria-hidden="true">Initialisation…</span>
+        </div>
+
+        <div class="hero-foot">
+          <span class="hotkey-chip" title="Raccourci clavier de la dictée">
+            <kbd id="hero-hotkey">—</kbd><span>pour dicter</span>
+          </span>
+          <div class="hero-last">
+            <span class="hero-last-label">Dernière dictée</span>
+            <span id="hero-last-text" class="hero-last-text empty">Aucune transcription pour l'instant.</span>
+            <button id="hero-last-copy" class="icon-btn" title="Copier la dernière transcription"
+                    aria-label="Copier la dernière transcription" disabled>
+              <svg class="ic-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="9" y="9" width="13" height="13" rx="2"/>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+              </svg>
+              <svg class="ic-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+                   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M20 6L9 17l-5-5"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Transcription en direct (mode continu) -->
+      <div id="live-transcript" class="live-transcript glass-soft hidden">
+        <div class="live-transcript-head">
+          <span class="live-transcript-badge">
+            <span class="live-pulse-dot"></span> Transcription en direct
+          </span>
+        </div>
+        <div id="live-transcript-body" class="live-transcript-body">
+          <span id="live-transcript-final" class="live-final"></span><span id="live-transcript-partial" class="live-partial"></span><span id="live-transcript-cursor" class="live-cursor"></span>
+          <span id="live-transcript-idle" class="live-idle">En attente d'enregistrement…</span>
+        </div>
+      </div>
+
+      <div class="card glass hoverable">
+        <div class="card-head">
+          <h2>Historique des transcriptions</h2>
+          <div class="card-head-actions">
+            <span id="history-live" class="live-badge hidden">
+              <span class="dot"></span> Temps réel
+            </span>
+            <button id="clear-history" class="link-danger" title="Vider tout l'historique">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/>
+                <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                <line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>
+              </svg>
+              <span>Vider</span>
+            </button>
+          </div>
+        </div>
+        <ul id="history-list" class="history-list" aria-label="Historique des transcriptions">
+          <!-- Squelettes shimmer : remplacés dès le premier rendu de l'historique -->
+          <li class="history-skeleton" aria-hidden="true">
+            <div class="skel skel-meta"></div><div class="skel"></div><div class="skel skel-short"></div>
+          </li>
+          <li class="history-skeleton" aria-hidden="true">
+            <div class="skel skel-meta"></div><div class="skel"></div>
+          </li>
+          <li class="history-skeleton" aria-hidden="true">
+            <div class="skel skel-meta"></div><div class="skel skel-short"></div>
+          </li>
+        </ul>
+      </div>
+
+      <!-- Barre d'état moteur -->
+      <div class="engine-bar glass-soft">
+        <span class="lbl">Modèle</span><span id="info-model" class="mono">—</span>
+        <span class="lbl">Accélération</span><span id="info-device" class="mono">—</span>
+        <span class="lbl">Compute</span><span id="info-compute" class="mono">—</span>
+        <span class="lbl">Raccourci</span><span id="info-hotkey" class="mono">—</span>
+        <span id="status-detail" class="engine-detail" aria-live="polite"></span>
+      </div>
+    </section>
+
+    <!-- ===================== PANNEAU LATÉRAL (2 colonnes) ===================== -->
+    <aside class="col-side">
+      <div class="side-cols">
+
+        <!-- ===== Colonne 1 ===== -->
+        <div class="side-col">
+
+          <!-- -------- Serveur -------- -->
+          <div class="card glass hoverable">
+            <div class="card-head">
+              <h2>Serveur</h2>
+              <span id="server-badge" class="server-badge off" title="Connexion au serveur talky">
+                <span class="dot"></span><span id="server-badge-text">Déconnecté</span>
+              </span>
+            </div>
+
+            <div class="field">
+              <label for="cfg-server-url">URL du serveur</label>
+              <input id="cfg-server-url" type="text" autocomplete="off" spellcheck="false"
+                     placeholder="http://192.168.1.50:8000" />
+            </div>
+
+            <div class="field">
+              <label for="cfg-server-api-key">Clé API</label>
+              <input id="cfg-server-api-key" type="password" autocomplete="new-password"
+                     placeholder="(vide = pas d'authentification)" />
+            </div>
+
+            <div class="row-2">
+              <div class="field">
+                <label for="cfg-server-timeout">Timeout lecture (s)</label>
+                <input id="cfg-server-timeout" type="number" min="5" step="1" />
+              </div>
+              <div class="field readonly">
+                <span class="lbl">Accélération</span>
+                <span id="cfg-device" class="mono value">cuda</span>
+              </div>
+            </div>
+
+            <div class="field">
+              <label for="cfg-compute">Compute type</label>
+              <select id="cfg-compute">
+                <option value="int8">INT8 (~0.8 Go VRAM, rapide)</option>
+                <option value="int8_float16">INT8+FP16 (~0.9 Go, équilibré)</option>
+                <option value="float16">FP16 (~1.6 Go, précis)</option>
+                <option value="float32">FP32 (~3 Go, max)</option>
+              </select>
+            </div>
+
+            <button id="btn-server-test" class="btn primary block">
+              <span class="btn-label">Tester la connexion</span>
+            </button>
+            <div id="server-test-result" class="server-test-result hidden" aria-live="polite"></div>
+          </div>
+
+          <!-- -------- Transcription -------- -->
+          <div class="card glass hoverable">
+            <div class="card-head"><h2>Transcription</h2></div>
+            <div class="field">
+              <label for="cfg-model">Modèle</label>
+              <select id="cfg-model"></select>
+              <p class="hint">Repo IDs HuggingFace complets (ex. mobiuslabsgmbh/faster-whisper-large-v3-turbo, Systran/faster-whisper-large-v3).</p>
+            </div>
+            <div class="row-2">
+              <div class="field">
+                <label for="cfg-language">Langue</label>
+                <select id="cfg-language">
+                  <option value="auto">Auto-détection</option>
+                  <option value="fr">Français</option>
+                  <option value="en">Anglais</option>
+                  <option value="es">Espagnol</option>
+                  <option value="de">Allemand</option>
+                  <option value="it">Italien</option>
+                  <option value="nl">Néerlandais</option>
+                  <option value="pt">Portugais</option>
+                  <option value="ru">Russe</option>
+                  <option value="ja">Japonais</option>
+                  <option value="zh">Chinois</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="cfg-task">Tâche</label>
+                <select id="cfg-task">
+                  <option value="transcribe">Transcrire</option>
+                  <option value="translate">Traduire (EN)</option>
+                </select>
+              </div>
+            </div>
+            <div class="field check">
+              <input id="cfg-vad" type="checkbox" />
+              <label for="cfg-vad">Filtre VAD (détection de parole)</label>
+            </div>
+          </div>
+
+          <!-- -------- Modèles (installation) -------- -->
+          <div class="card glass hoverable">
+            <div class="card-head">
+              <h2>Modèles (installation)</h2>
+              <button id="btn-registry-refresh" class="btn ghost" title="Actualiser la liste">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M23 4v6h-6"/><path d="M1 20v-6h6"/>
+                  <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                </svg>
+                <span class="btn-label">Actualiser</span>
+              </button>
+            </div>
+            <div class="field">
+              <label for="registry-search">Modèles disponibles</label>
+              <div class="combobox-host">
+                <input id="registry-search" type="text" placeholder="Rechercher un modèle…" autocomplete="off" />
+                <div id="registry-dropdown" class="combobox-dropdown hidden"></div>
+              </div>
+              <p class="hint">Tapez pour filtrer. Cliquez sur un modèle puis « Installer ».</p>
+            </div>
+            <button id="btn-install-model" class="btn primary block">
+              <span class="btn-label">Installer</span>
+            </button>
+            <div id="install-feedback" class="feedback" aria-live="polite"></div>
+          </div>
+
+        </div>
+
+        <!-- ===== Colonne 2 ===== -->
+        <div class="side-col">
+
+          <!-- -------- Raccourci -------- -->
+          <div class="card glass hoverable">
+            <div class="card-head"><h2>Raccourci</h2></div>
+            <button id="hotkey-pick" type="button" class="hotkey-pick">—</button>
+            <p class="hint">Cliquez puis appuyez sur la touche ou la combinaison souhaitée
+              (ex. F8, Ctrl+Espace, Ctrl+Alt+F9). Échap annule.</p>
+          </div>
+
+          <!-- -------- Mode de saisie -------- -->
+          <div class="card glass hoverable">
+            <div class="card-head"><h2>Mode de saisie</h2></div>
+            <div class="field">
+              <select id="cfg-mode">
+                <option value="push_to_talk">Push-To-Talk (maintenir pour parler)</option>
+                <option value="toggle">Toggle (appuyer / appuyer)</option>
+              </select>
+            </div>
+            <div class="field check">
+              <input id="cfg-continuous" type="checkbox" />
+              <label for="cfg-continuous">Transcription en continu</label>
+            </div>
+            <p class="hint">Affiche le texte au fur et à mesure pendant l'enregistrement.</p>
+          </div>
+
+          <!-- -------- Périphérique audio -------- -->
+          <div class="card glass hoverable">
+            <div class="card-head"><h2>Périphérique audio</h2></div>
+            <div class="row">
+              <select id="cfg-audio-device" aria-label="Microphone">
+                <option value="">Périphérique par défaut</option>
+              </select>
+              <button id="btn-devices-refresh" class="btn ghost" title="Rafraîchir la liste des micros">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M23 4v6h-6"/><path d="M1 20v-6h6"/>
+                  <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                </svg>
+                <span class="btn-label">Rafraîchir</span>
+              </button>
+            </div>
+            <p class="hint">Un changement de micro redémarre le moteur.</p>
+          </div>
+
+          <!-- -------- Comportement d'injection -------- -->
+          <div class="card glass hoverable">
+            <div class="card-head"><h2>Comportement d'injection</h2></div>
+            <div class="field check">
+              <input id="cfg-inject" type="checkbox" />
+              <label for="cfg-inject">Injecter le texte par simulation clavier (Ctrl+V)</label>
+            </div>
+            <div class="field check">
+              <input id="cfg-add-space" type="checkbox" />
+              <label for="cfg-add-space">Ajouter un espace après le texte transcrit</label>
+            </div>
+            <div class="field check">
+              <input id="cfg-keep-clipboard" type="checkbox" />
+              <label for="cfg-keep-clipboard">Conserver le texte dans le presse-papier (sinon restauration)</label>
+            </div>
+          </div>
+
+          <!-- -------- Démarrage & historique -------- -->
+          <div class="card glass hoverable">
+            <div class="card-head"><h2>Démarrage &amp; historique</h2></div>
+            <div class="field check">
+              <input id="cfg-auto-start" type="checkbox" />
+              <label for="cfg-auto-start">Démarrer le moteur au lancement de Talky</label>
+            </div>
+            <div class="field">
+              <label for="cfg-max-history">Taille maximale de l'historique</label>
+              <input id="cfg-max-history" type="number" min="1" step="1" />
+            </div>
+          </div>
+
+          <!-- -------- Enregistrer -------- -->
+          <div class="card glass">
+            <button id="btn-save" class="btn primary block">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/>
+                <path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9z"/>
+              </svg>
+              <span class="btn-label">Enregistrer les paramètres</span>
+            </button>
+            <p id="save-feedback" class="feedback" aria-live="polite"></p>
+          </div>
+
+        </div>
+      </div>
+
+    </aside>
+  </main>
+
+  <!-- ===================== MODALE DE CONFIRMATION (Vider l'historique) =========
+       Remplace confirm() natif : dialog custom stylée, focus piégé, Échap/Annuler. -->
+  <div id="confirm-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true"
+       aria-labelledby="confirm-title" aria-describedby="confirm-desc">
+    <div class="modal-card glass">
+      <h3 id="confirm-title">Vider l'historique ?</h3>
+      <p id="confirm-desc">Cette action est définitive. <span id="confirm-count"></span></p>
+      <div class="modal-actions">
+        <button id="confirm-cancel" class="btn ghost">Annuler</button>
+        <button id="confirm-ok" class="btn danger">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/>
+            <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+          </svg>
+          <span class="btn-label">Vider</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js?v=20"></script>
+</body>
+</html>

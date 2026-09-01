@@ -1,0 +1,39 @@
+# =============================================================================
+# talky.service.example — unité systemd USER pour le client « talky »
+#
+# Installation :
+#   cp talky.service.example ~/.config/systemd/user/talky.service
+#   # adapter ExecStart / WorkingDirectory à votre installation
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now talky.service
+#
+# Le service doit tourner dans votre session graphique (Wayland) pour avoir
+# accès au presse-papier (wl-copy), aux périphériques /dev/input (groupe
+# input) et à l'affichage. Vérifiez que votre utilisateur appartient bien
+# au groupe input (setup.sh le fait).
+# =============================================================================
+[Unit]
+Description=Talky — dictée vocale client/serveur (Web panel 127.0.0.1:8000)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/chemin/vers/talky/client
+# Chemin du venv créé par setup.sh :
+ExecStart=/chemin/vers/talky/client/.venv/bin/python main.py
+# Sans venv (paquets système, option --no-venv) :
+# ExecStart=/usr/bin/python main.py
+
+Restart=on-failure
+RestartSec=5
+
+# Variables d'environnement de la session graphique (à adapter) :
+#   uid     = votre identifiant (id -u)
+#   display = votre display Wayland (echo $WAYLAND_DISPLAY)
+# Environment=XDG_RUNTIME_DIR=/run/user/1000
+# Environment=WAYLAND_DISPLAY=wayland-1
+# Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+
+[Install]
+WantedBy=default.target

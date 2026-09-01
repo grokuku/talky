@@ -1,0 +1,47 @@
+services:
+  # Serveur de transcription TALKY (conteneur maison, faster-whisper)
+  # ======================================================================
+  # - REST OpenAI-compatible  : POST /v1/audio/transcriptions (port 8000)
+  # - WebSocket temps réel    : ws://host:9090/ (PCM16 int16, VAD Silero)
+  # - Gestion de modèles      : GET /v1/models, GET /v1/registry,
+  #                             POST /v1/models (installation client, body JSON)
+  # - Précision               : INT8 natif (TALKY_COMPUTE_TYPE, défaut int8)
+  # - Un SEUL port conteneur (9090) sert REST + WS ; les ports hôtes
+  #   8000 (REST) et 9090 (WS) y mappent tous les deux.
+  #
+  # Build de l'image :  docker build -t talky-server .   (depuis server/)
+  talky-server:
+    build: .
+    image: talky-server:latest
+    container_name: talky-server
+    restart: unless-stopped
+    ports:
+      # REST — le client utilise server_url=http://<ip>:8000
+      - "${TALKY_PORT:-8000}:9090"
+      # WebSocket — le client utilise ws_port=9090
+      - "${TALKY_WS_PORT:-9090}:9090"
+    environment:
+      # --- Modèle / langue -------------------------------------------------
+      - TALKY_MODEL=${TALKY_MODEL:-large-v3-turbo}
+      - TALKY_LANGUAGE=${TALKY_LANGUAGE:-}          # vide = auto-détection
+      # --- Précision / VAD -------------------------------------------------
+      # compute_type faster-whisper : int8 (défaut), int8_float16, float16,
+      # float32. INT8 ≈ 0,8 Go VRAM pour large-v3-turbo (4070 12 Go : OK).
+      - TALKY_COMPUTE_TYPE=${TALKY_COMPUTE_TYPE:-int8}
+      - TALKY_VAD_THRESHOLD=${TALKY_VAD_THRESHOLD:-0.5}
+      - TALKY_VAD_SILENCE_MS=${TALKY_VAD_SILENCE_MS:-500}
+      # --- Concurrence / logs ----------------------------------------------
+      - TALKY_MAX_CLIENTS=${TALKY_MAX_CLIENTS:-4}
+      - TALKY_LOG_LEVEL=${TALKY_LOG_LEVEL:-INFO}
+    volumes:
+      # Cache des modèles HuggingFace (persistant entre les redémarrages).
+      # Sur Unraid : ${HF_CACHE_PATH:-/mnt/user/appdata/talky/hf-hub-cache}
+      - ${HF_CACHE_PATH:-./hf-hub-cache}:/var/lib/whisper-live
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities:
+                - gpu

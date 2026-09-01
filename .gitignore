@@ -1,0 +1,44 @@
+# ------------------------------------------------------------------------------
+# talky — .gitignore racine
+# ------------------------------------------------------------------------------
+
+# --- Secrets / environnement ---------------------------------------------------
+# Ne JAMAIS versionner les fichiers .env (seul .env.example est commité)
+.env
+.env.*
+!.env.example
+server/.env
+
+# --- Python (projet ref/ hérité) ----------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+venv*/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Outils / éditeurs --------------------------------------------------------
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# --- Artefacts de build -------------------------------------------------------
+dist/
+build/
+*.log
+
+# --- Cache modèles (bind mount) ----------------------------------------------
+# Dossier local du cache Hugging Face / état serveur (modèles Whisper, ~1,6 Go+
+# par modèle). Monté dans le conteneur sur /var/lib/whisper-live.
+# Créé par l'utilisateur : mkdir -p server/hf-hub-cache  (pas de chown requis)
+server/hf-hub-cache/
+
+# --- Configuration locale du client -------------------------------------------
+# config.json contient server_url, server_api_key, etc. — jamais versionné
+# (seul config.template.json est commité).
+client/config.json

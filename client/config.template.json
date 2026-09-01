@@ -1,0 +1,19 @@
+{
+  "server_url": "http://192.168.1.50:8000",
+  "server_api_key": "",
+  "server_timeout": 30,
+  "ws_port": 9090,
+  "model": "large-v3-turbo",
+  "language": "fr",
+  "task": "transcribe",
+  "vad_filter": true,
+  "hotkey": "f8",
+  "input_mode": "push_to_talk",
+  "audio_device": null,
+  "inject_text": true,
+  "add_space": true,
+  "keep_in_clipboard": false,
+  "auto_start": false,
+  "max_history": 50,
+  "continuous_mode": true
+}

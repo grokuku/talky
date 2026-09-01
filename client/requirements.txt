@@ -1,0 +1,33 @@
+# =====================================================================
+# Talky - Dictée vocale client/serveur (client CachyOS, §5.11 roadmap.md)
+# Versions verrouillées — Python 3.14 (défaut Arch) : tout est compatible
+# (voir research/RAPPORT_STACK_2026.md, section I6).
+# =====================================================================
+
+# --- Backend web local (uvicorn 127.0.0.1:8000) ---
+fastapi==0.141.1        # pacman -S python-fastapi
+uvicorn==0.52.1         # pacman -S uvicorn   (⚠ paquet nommé `uvicorn`, pas python-uvicorn)
+httpx==0.28.1           # pacman -S python-httpx   (client HTTP -> serveur whisper-live)
+websockets==17.0.1      # pacman -S python-websockets (client WS temps réel -> WhisperLive)
+
+# --- Audio & clavier ---
+numpy==2.5.1            # pacman -S python-numpy
+sounddevice==0.5.5      # AUR python-sounddevice (dép. python-cffi + portaudio)
+                        #   + pipewire-alsa pour router ALSA -> PipeWire (I9)
+evdev==1.9.3            # pacman -S python-evdev   (⚠ PAS de wheel PyPI : paquet Arch obligatoire)
+pyperclip==1.11.0       # pacman -S python-pyperclip (Wayland : wl-clipboard 2.3.0)
+
+# --- Tests ---
+pytest>=8.0             # pacman -S python-pytest
+
+# =====================================================================
+# Paquets système Arch requis (hors pip) :
+#   portaudio 19.7.0        : pacman -S portaudio
+#   pipewire + pipewire-alsa: pacman -S pipewire pipewire-alsa pipewire-pulse
+#   wl-clipboard 2.3.0      : pacman -S wl-clipboard   (pyperclip Wayland)
+#   python-evdev            : pas de wheel PyPI -> paquet Arch obligatoire (I7)
+#
+# Actions post-install (Wayland, voir §6 roadmap.md) :
+#   sudo usermod -aG input $USER      (hotkeys evdev, I8)
+#   systemctl --user enable --now ydotool   (injection Ctrl+V, optionnel, I12)
+# =====================================================================
