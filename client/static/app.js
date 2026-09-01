@@ -380,17 +380,9 @@ function renderConfig() {
   if ($("hotkey-pick")) $("hotkey-pick").textContent = c.hotkey || "—";
   if ($("hero-hotkey")) $("hero-hotkey").textContent = c.hotkey || "—";
   // NB : plus de scheduleFitZoom() ici — remplir la config ne change pas le
-  // zoom. Le scale ne se recalcule que sur resize / first-run.
-  //
-  // EXCEPTION one-shot : le premier rendu effectif de la config (au hello) peut
-  // arriver APRÈS la première mesure de fit-vp et changer la hauteur naturelle
-  // de .col-side (libellés/raccourcis injectés). On re-base le zoom UNE seule
-  // fois ; les rendus suivants (polling, save) ne re-déclenchent plus rien.
-  if (!fitConfigInvalidated) {
-    fitConfigInvalidated = true;
-    invalidateFitBase();
-    scheduleFitZoom(true);
-  }
+  // zoom. Le scale ne se recalcule que sur resize / first-run. La croissance
+  // de contenu de .col-side (config rendue, feedbacks) est couverte par le
+  // ResizeObserver debouncé installé dans init() — pas besoin de one-shot.
   updateHeroMicLabel();
 }
 
@@ -1724,6 +1716,15 @@ function initHotkeyCapture() {
 //     elle est mémorisée dans `fitBaseNatural` et ne dépend PLUS du contenu
 //     courant. Le scale ne se recalcule QUE sur resize/first-run — le zoom ne
 //     redézoom plus quand l'historique grandit (le scroll interne absorbe).
+//   - AUTO-CORRECTION 2 PASSES : après le verrouillage initial, on mesure le
+//     rendu RÉEL du .layout (getBoundingClientRect().height, qui intègre le
+//     zoom standardisé + les paddings/marges réels) vs la cible (viewport sous
+//     le topbar réel, mesuré via getBoundingClientRect().bottom) et on ajuste
+//     lockH de delta/scale (max 2 itérations) — absorbe TOUS les offsets
+//     constants sans les deviner.
+//   - ResizeObserver debouncé sur .col-side : si sa hauteur naturelle change
+//     de plus de 8px (config rendue, feedbacks), on re-déclenche fitZoom pour
+//     que la colonne droite remplisse toujours la hauteur.
 //   - si le contenu dépasse même au zoom min (0.85) → on laisse le scroll
 //     normal, on n'écrase jamais le contenu.
 // Sans JS (ou .fit-vp absent) : comportement scroll normal existant.
@@ -1736,11 +1737,6 @@ let fitZoomTimer = null;
 // Hauteur naturelle de référence (px) mesurée une fois, conservée entre deux
 // resize. 0 = pas encore mesurée → fitZoom la mesure au passage.
 let fitBaseNatural = 0;
-// One-shot : le premier rendu effectif de la config (renderConfig au hello)
-// peut changer la hauteur naturelle de .col-side APRÈS la première mesure de
-// fit-vp → on re-base le zoom UNE seule fois ; les rendus suivants (polling,
-// save) ne re-déclenchent plus rien.
-let fitConfigInvalidated = false;
 
 function zoomSupported() {
   return "zoom" in document.body.style;
@@ -1787,8 +1783,8 @@ function measureFitBase() {
 
   try {
     const tbEl = document.querySelector(".topbar");
-    const topbar = tbEl ? tbEl.offsetHeight : 64;
-    const available = Math.max(220, window.innerHeight - topbar - 32);
+    const topbarBottom = tbEl ? tbEl.getBoundingClientRect().bottom : 0;
+    const available = Math.max(220, window.innerHeight - topbarBottom);
     fitBaseNatural = colSide.offsetHeight || available;
     return fitBaseNatural;
   } finally {
@@ -1824,8 +1820,8 @@ function fitZoom() {
   }
 
   const tbEl = document.querySelector(".topbar");
-  const topbar = tbEl ? tbEl.offsetHeight : 64;
-  const available = Math.max(220, window.innerHeight - topbar - 32);
+  const topbarBottom = tbEl ? tbEl.getBoundingClientRect().bottom : 0;
+  const target = Math.max(220, window.innerHeight - topbarBottom);
 
   // 1) Base mesurée une fois (init / resize / fonts.ready). Le contenu courant
   //    (taille de l'historique…) n'influence jamais cette référence.
@@ -1833,7 +1829,7 @@ function fitZoom() {
 
   // 2) Échelle cible bornée [0.85, 1.6].
   const MIN = 0.85, MAX = 1.6;
-  let scale = available / fitBaseNatural;
+  let scale = target / fitBaseNatural;
   if (scale > MAX) scale = MAX;
   if (scale < MIN) scale = MIN;
 
@@ -1842,7 +1838,7 @@ function fitZoom() {
   //    layout de BASE (sticky + scroll interne de l'historique). clearFitZoom
   //    purge les styles inline de hauteur/zoom ; invalidateFitBase force une
   //    re-mesure si une entrée (resize) tente de réactiver fit-vp plus tard.
-  if (fitBaseNatural * MIN > available) {
+  if (fitBaseNatural * MIN > target) {
     clearFitZoom();
     document.body.classList.remove("fit-vp");
     invalidateFitBase();
@@ -1851,11 +1847,32 @@ function fitZoom() {
 
   // 4) Verrouiller la hauteur du conteneur : le zoom standardisé MULTIPLIE
   //    les longueurs RENDUES (la boîte rendue fait layout × zoom). En fixant
-  //    la hauteur à available/scale, une fois multipliée par le zoom elle
+  //    la hauteur à target/scale, une fois multipliée par le zoom elle
   //    occupe exactement l'espace disponible — sinon la page déborderait d'un
   //    facteur scale. Le repli transform fonctionne pareil (le scale agit sur
   //    le rendu final), d'où la largeur élargie inversement pour compenser.
-  const lockH = Math.max(1, Math.round(available / scale));
+  //
+  //    PASSE 1 : verrouillage initial (formule historique).
+  let lockH = Math.max(1, Math.round(target / scale));
+  applyFitZoom(layout, scale, lockH);
+
+  //    PASSE 2 : AUTO-CORRECTION — mesure le rendu RÉEL du .layout
+  //    (getBoundingClientRect().height, qui intègre le zoom standardisé + les
+  //    paddings/marges réels) vs la cible (viewport sous le topbar réel). Si
+  //    l'écart dépasse 2px, on ajuste lockH de delta/scale et on ré-applique
+  //    (max 2 itérations, garde-fou). Ça absorbe TOUS les offsets constants
+  //    (paddings, margins, gaps) sans les deviner.
+  for (let i = 0; i < 2; i++) {
+    const rendered = layout.getBoundingClientRect().height;
+    const delta = rendered - target;
+    if (Math.abs(delta) <= 2) break;
+    lockH = Math.max(1, Math.round(lockH - delta / scale));
+    applyFitZoom(layout, scale, lockH);
+  }
+}
+
+// Applique le verrouillage de hauteur + le zoom (CSS `zoom` ou repli transform).
+function applyFitZoom(layout, scale, lockH) {
   if (zoomSupported()) {
     layout.style.height = lockH + "px";
     layout.style.zoom = String(scale);
@@ -2010,6 +2027,28 @@ function init() {
   // Resize : re-base la hauteur de référence puis recalcule le zoom.
   window.addEventListener("resize", () => scheduleFitZoom(true));
   scheduleFitZoom(true);
+
+  // ResizeObserver debouncé (150ms) sur .col-side : si sa hauteur naturelle
+  // change de plus de 8px (config qui se rend, feedbacks, résultat de test
+  // serveur…), on re-déclenche fitZoom pour que la colonne droite remplisse
+  // toujours la hauteur. On compare scrollHeight (hauteur de CONTENU, stable
+  // quand on verrouille la hauteur du conteneur) pour éviter toute boucle.
+  const colSide = document.querySelector(".col-side");
+  if (colSide && typeof ResizeObserver === "function") {
+    let lastSideH = colSide.scrollHeight;
+    let roTimer = null;
+    const ro = new ResizeObserver(() => {
+      if (roTimer) clearTimeout(roTimer);
+      roTimer = setTimeout(() => {
+        const h = colSide.scrollHeight;
+        if (Math.abs(h - lastSideH) > 8) {
+          lastSideH = h;
+          scheduleFitZoom(true);
+        }
+      }, 150);
+    });
+    ro.observe(colSide);
+  }
 
   // Une fois les polices web chargées la hauteur naturelle peut changer : on
   // re-base le zoom une seule fois (rare). Géré en optionnel (vieillissement
