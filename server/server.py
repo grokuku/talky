@@ -55,6 +55,8 @@ MAX_CLIENTS = int(os.environ.get("TALKY_MAX_CLIENTS", "4"))
 # Clé API optionnelle : si non vide, exige `Authorization: Bearer <clé>` sur
 # REST et dans le handshake WebSocket. Vide = aucune authentification (LAN).
 API_KEY = os.environ.get("TALKY_API_KEY", "").strip()
+# Chemins REST exemptés d'authentification (healthcheck Docker sans secret).
+EXEMPT_PATHS = {"/health"}
 SR = 16000
 
 os.environ.setdefault("HF_HOME", CACHE_DIR)
@@ -356,10 +358,18 @@ if API_KEY:
     @app.middleware("http")
     async def _require_api_key(request, call_next):
         """Exige `Authorization: Bearer <clé>` sur toutes les routes REST."""
+        if request.url.path in EXEMPT_PATHS:   # healthcheck Docker sans secret
+            return await call_next(request)
         auth = request.headers.get("authorization", "")
         if auth != f"Bearer {API_KEY}":
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
         return await call_next(request)
+
+
+@router.get("/health")
+async def health() -> dict:
+    """Sonde de santé (ultra-légère : aucun accès modèle ni inférence)."""
+    return {"status": "ok"}
 
 
 @router.get("/v1/models")

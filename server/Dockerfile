@@ -36,6 +36,6 @@ VOLUME ["/var/lib/whisper-live"]
 EXPOSE 9090
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=300s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9090/docs', timeout=3)" || exit 1
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9090/health', timeout=3)" || exit 1
 
 CMD ["python", "server.py"]

@@ -33,6 +33,9 @@ services:
       # --- Concurrence / logs ----------------------------------------------
       - TALKY_MAX_CLIENTS=${TALKY_MAX_CLIENTS:-4}
       - TALKY_LOG_LEVEL=${TALKY_LOG_LEVEL:-INFO}
+      # --- Authentification -------------------------------------------------
+      # Clé API optionnelle (vide = aucune authentification, usage LAN privé).
+      - TALKY_API_KEY=${TALKY_API_KEY:-}
     volumes:
       # Cache des modèles HuggingFace (persistant entre les redémarrages).
       # Sur Unraid : ${HF_CACHE_PATH:-/mnt/user/appdata/talky/hf-hub-cache}
