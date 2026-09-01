@@ -337,9 +337,9 @@ function updateState() {
   // s'arrête (success/ready/error/idle), on vide la zone.
   syncLiveTranscript(status);
 
-  // Le changement d'état peut varier la hauteur (live-transcript, badge) :
-  // on re-calcule le zoom global.
-  scheduleFitZoom();
+  // NB : plus de scheduleFitZoom() ici — un changement d'état (badge,
+  // live-transcript) ne doit PAS re-baser le zoom. Le scale reste stable
+  // tant qu'il n'y a pas de resize.
 }
 
 function updateMotorInfo() {
@@ -379,8 +379,9 @@ function renderConfig() {
   $("cfg-max-history").value = c.max_history ?? 50;
   if ($("hotkey-pick")) $("hotkey-pick").textContent = c.hotkey || "—";
   if ($("hero-hotkey")) $("hero-hotkey").textContent = c.hotkey || "—";
+  // NB : plus de scheduleFitZoom() ici — remplir la config ne change pas le
+  // zoom. Le scale ne se recalcule que sur resize / first-run.
   updateHeroMicLabel();
-  scheduleFitZoom();
 }
 
 // Version « prudente » : ne touche pas aux champs en cours de saisie
@@ -965,8 +966,9 @@ function renderHistory() {
   // La carte héro reflète toujours la transcription la plus récente.
   updateHeroLast();
 
-  // Le nombre d'entrées change la hauteur → re-calcule le zoom global.
-  scheduleFitZoom();
+  // NB : plus de scheduleFitZoom() ici — la croissance de l'historique ne doit
+  // pas dézoomer. La hauteur de référence est figée ; le scroll interne de la
+  // liste absorbe l'excédent.
 
   if (!app.history.length) {
     const li = document.createElement("li");
@@ -1186,9 +1188,17 @@ const RING = {
   floor: 0.015,       // plancher (bruit/silence) soustrait avant normalisation
   release: 0.035,     // relâchement / frame (~3-4 s : 0.15 → plancher)
   gamma: 0.55,        // courbe de réponse v^gamma (petites amplitudes visibles)
-  levels: [],         // niveaux cibles 0..1 (36)
+  levels: [],         // niveaux cibles 0..1 (36) — cible courante (dernière frame jouée)
   disp: [],           // niveaux affichés (interpolés)
-  recording: false,   // enregistrement en cours (dernier événement reçu)
+  recording: false,   // enregistrement en cours (frame consommée)
+  // File de relecture des événements audio WS : le serveur broadcast par
+  // paquets (~0.2 s) une LISTE d'événements {levels, recording} (≈20 frames de
+  // 50 ms). handleAudio pousse chaque frame ici ; la boucle rAF les consomme à
+  // la cadence réelle (frameMs) pour un mouvement continu à 20 fps effectifs
+  // même si le rendu tourne à 60 fps.
+  audioQueue: [],     // file bornée {levels:[..], recording:bool}
+  frameMs: 50,        // cadence de production d'une frame (50 ms)
+  lastFrameTime: 0,   // horloge (performance.now) de la dernière consommation
   raf: 0,
   dirty: true,        // nouvelles données à dessiner (mode reduced-motion)
   reduced: (typeof matchMedia === "function")
@@ -1294,6 +1304,13 @@ function adaptiveGain(out) {
   return out;
 }
 
+// Reçoit un événement audio WS. Producteur de file : chaque événement pousse
+// une frame {levels, recording} dans RING.audioQueue (file bornée — on éjecte
+// les plus vieilles en cas de saturation, jamais de croissance infinie).
+// La consommation réelle (mise à jour des cibles + AGC) se fait dans la boucle
+// rAF, à la cadence réelle des frames (50 ms/frame).
+const AUDIO_QUEUE_MAX = 24;   // ≈ 1.2 s de buffer, plafonne le repli de frames
+
 function handleAudio(data) {
   if (!RING.canvas) initRing();
   if (!RING.canvas) return;
@@ -1301,16 +1318,65 @@ function handleAudio(data) {
   const levels = data && Array.isArray(data.levels) ? data.levels : null;
   if (!levels) return;
 
-  RING.recording = !!(data && data.recording);
-  RING.levels = adaptiveGain(groupRingLevels(levels));
-  RING.dirty = true;
+  RING.audioQueue.push({
+    levels,
+    recording: !!(data && data.recording),
+  });
+  if (RING.audioQueue.length > AUDIO_QUEUE_MAX) {
+    RING.audioQueue.splice(0, RING.audioQueue.length - AUDIO_QUEUE_MAX);
+  }
 }
 
-// Boucle rAF : interpolation des niveaux affichés puis dessin.
-// En reduced-motion : aucun lissage ni halo, redessin sur données neuves.
+// Consomme la file à la cadence réelle des frames (frameMs). Horloge via
+// performance.now : on accumule le temps écoulé et on avance d'autant de
+// frames que nécessaire, en gardant la dernière comme cible courante. Si la
+// file est vide (paquet WS suivant pas encore arrivé), on garde la dernière
+// cible — le lerp continue simplement de converger, sans saut.
+// L'AGC (adaptiveGain) s'applique PAR FRAME jouée, pas seulement sur la
+// dernière reçue : le gain suit donc le replay à 20 fps.
+function consumeAudioFrames() {
+  // Autorité de l'état moteur : moteur arrêté → AUCUNE consommation. updateState
+  // a déjà remis les cibles/niveaux à zéro ; on vide le buffer pour qu'une
+  // frame retardée consommée APRÈS le state d'arrêt ne rallume pas un halo/hub
+  // figé. Au démarrage les frames repoussent et sont consommées normalement.
+  if (!(app && app.state && app.state.running)) {
+    RING.audioQueue.length = 0;
+    return;
+  }
+  const now = performance.now();
+  if (RING.lastFrameTime === 0) {
+    RING.lastFrameTime = now;      // amorce l'horloge, rien à consommer encore
+    return;
+  }
+  const elapsed = now - RING.lastFrameTime;
+  if (elapsed < RING.frameMs) return;
+
+  let steps = Math.floor(elapsed / RING.frameMs);
+  RING.lastFrameTime += steps * RING.frameMs;
+
+  let consumed = null;
+  // Rejoue au plus `steps` frames (borné par la longueur de la file : on ne
+  // « rattrape » jamais plus que le buffer disponible).
+  while (steps-- > 0 && RING.audioQueue.length) {
+    consumed = RING.audioQueue.shift();
+  }
+  if (consumed) {
+    RING.levels = adaptiveGain(groupRingLevels(consumed.levels));
+    RING.recording = consumed.recording;
+    RING.dirty = true;
+  }
+}
+
+// Boucle rAF : consomme la file à cadence réelle, interpole les niveaux
+// affichés puis dessine. En reduced-motion : aucun lissage ni halo, redessin
+// sur chaque frame consommée.
 function ringFrame() {
   RING.raf = requestAnimationFrame(ringFrame);
   if (!RING.ctx || document.hidden) return;
+
+  // La cible courante avance à la cadence des frames (20 fps effectifs) tandis
+  // que le rendu reste à 60 fps → mouvement continu, plus d'escalier.
+  consumeAudioFrames();
 
   const reduced = RING.reduced.matches;
   if (reduced) {
@@ -1612,52 +1678,104 @@ function initHotkeyCapture() {
 //   - zoom = clamp(hauteur_dispo / hauteur_naturelle, 0.85, 1.6) ;
 //   - `zoom` CSS supporté (Chromium + Firefox ≥ v126) ; sinon repli transform
 //     scale (approx. : largeur compensée) ;
-//   - recalcule debouncé (150 ms) sur resize ET après tout rendu qui change la
-//     hauteur (renderHistory, updateState, config) ;
+//   - la HAUTEUR NATURELLE DE RÉFÉRENCE est mesurée UNE SEULE FOIS
+//     (premier fitZoom après init, à chaque resize, et sur document.fonts.ready) :
+//     elle est mémorisée dans `fitBaseNatural` et ne dépend PLUS du contenu
+//     courant. Le scale ne se recalcule QUE sur resize/first-run — le zoom ne
+//     redézoom plus quand l'historique grandit (le scroll interne absorbe).
 //   - si le contenu dépasse même au zoom min (0.85) → on laisse le scroll
 //     normal, on n'écrase jamais le contenu.
 // Sans JS (ou .fit-vp absent) : comportement scroll normal existant.
 // --------------------------------------------------------------------------
 let fitZoomTimer = null;
+// Hauteur naturelle de référence (px) mesurée une fois, conservée entre deux
+// resize. 0 = pas encore mesurée → fitZoom la mesure au passage.
+let fitBaseNatural = 0;
 
 function zoomSupported() {
   return "zoom" in document.body.style;
 }
 
-// Planifie un re-calcul debouncé (les rendus successifs n'empilent pas).
-function scheduleFitZoom() {
+// Remet à zéro la hauteur de référence quand celle-ci doit être re-mesurée
+// (resize, sortie/réentrée dans fit-vp, document.fonts.ready). Le prochain
+// fitZoom la mesurera fraîchement.
+function invalidateFitBase() {
+  fitBaseNatural = 0;
+}
+
+// Planifie un re-calcul debouncé (les resize successifs n'empilent pas).
+// `remeasure` (true) force la re-mesure de la hauteur de référence — utilisé
+// uniquement par les entrées qui doivent re-baser le zoom (resize, first run,
+// fonts.ready), jamais par un changement de contenu.
+function scheduleFitZoom(remeasure) {
   if (fitZoomTimer) clearTimeout(fitZoomTimer);
+  if (remeasure) invalidateFitBase();
   fitZoomTimer = setTimeout(fitZoom, 150);
+}
+
+// Mesure la hauteur naturelle du conteneur (zoom=1, hauteur auto déverrouillée)
+// et la stocke comme référence de base. Retourne la valeur mémorisée.
+function measureFitBase() {
+  const layout = document.querySelector(".layout");
+  if (!layout) return 0;
+  layout.style.zoom = "1";
+  layout.style.transform = "";
+  layout.style.width = "";
+  layout.style.height = "auto";   // déverrouille la hauteur pour une mesure fiable
+
+  // La base mesure la structure fixe + une hauteur NOMINALE de liste ;
+  // l'excédent est absorbé par le scroll interne de #history-list.
+  // Sans cette neutralisation, la carte historique (.col-main > .card) est en
+  // flex:1/min-height:0 sur #history-list flex:1/overflow-y:auto → sans hauteur
+  // fixe sur un ancêtre, la chaîne flex grandit au CONTENU (50 items ≈ 4000px+),
+  // ce qui gonfle fitBaseNatural, pousse scale au plancher et désactive par
+  // erreur la branche de secours fit-vp au first-run et à chaque resize.
+  const histCard = document.querySelector(".col-main > .card");
+  const histList = document.getElementById("history-list");
+  const saved = { card: "", list: "" };
+  if (histCard) { saved.card = histCard.style.cssText; histCard.style.cssText = "flex:0 0 auto; height:200px;"; }
+  if (histList) { saved.list = histList.style.cssText; histList.style.cssText = "max-height:180px; overflow:hidden;"; }
+
+  try {
+    const tbEl = document.querySelector(".topbar");
+    const topbar = tbEl ? tbEl.offsetHeight : 64;
+    const available = Math.max(220, window.innerHeight - topbar - 32);
+    fitBaseNatural = layout.offsetHeight || available;
+    return fitBaseNatural;
+  } finally {
+    // Restauration systématique (mesure jamais laissée en état dégradé).
+    if (histCard) histCard.style.cssText = saved.card;
+    if (histList) histList.style.cssText = saved.list;
+  }
 }
 
 function fitZoom() {
   const layout = document.querySelector(".layout");
   if (!layout || !document.body.classList.contains("fit-vp")) return;
 
-  // 1) Rétablir la taille naturelle (zoom=1, hauteur auto) pour la mesure.
-  layout.style.zoom = "1";
-  layout.style.transform = "";
-  layout.style.width = "";
-  layout.style.height = "auto";
-
   const tbEl = document.querySelector(".topbar");
   const topbar = tbEl ? tbEl.offsetHeight : 64;
   const available = Math.max(220, window.innerHeight - topbar - 32);
-  const natural = layout.offsetHeight || available;
+
+  // 1) Base mesurée une fois (init / resize / fonts.ready). Le contenu courant
+  //    (taille de l'historique…) n'influence jamais cette référence.
+  if (!fitBaseNatural) measureFitBase();
 
   // 2) Échelle cible bornée [0.85, 1.6].
   const MIN = 0.85, MAX = 1.6;
-  let scale = available / natural;
+  let scale = available / fitBaseNatural;
   if (scale > MAX) scale = MAX;
   if (scale < MIN) scale = MIN;
 
-  // 3) Même au zoom min on déborde encore → scroll normal, pas de hauteur
-  //    verrouillée (on ne masque pas de contenu).
-  if (natural * MIN > available) {
-    layout.style.zoom = "1";
-    layout.style.transform = "";
-    layout.style.width = "";
-    layout.style.height = "auto";
+  // 3) Même au zoom min on déborde encore → on ne garde PAS d'hybride qui
+  //    écrase le contenu : on retire la classe .fit-vp pour retomber sur le
+  //    layout de BASE (sticky + scroll interne de l'historique). clearFitZoom
+  //    purge les styles inline de hauteur/zoom ; invalidateFitBase force une
+  //    re-mesure si une entrée (resize) tente de réactiver fit-vp plus tard.
+  if (fitBaseNatural * MIN > available) {
+    clearFitZoom();
+    document.body.classList.remove("fit-vp");
+    invalidateFitBase();
     return;
   }
 
@@ -1799,13 +1917,19 @@ function init() {
   // Sur mobile/tablette on garde le scroll normal (le CSS est lui-même borné
   // par @media). On bascule la classe via matchMedia et on repère le passage
   // de la bordure au resize pour ajouter/retirer la classe + recalculer ; si
-  // la classe est retirée on purge les styles inline posés par fitZoom.
+  // la classe est retirée on purge les styles inline posés par fitZoom. Le
+  // zoom ne se recale QUE sur first-run / resize / fonts.ready (jamais sur un
+  // changement de contenu) → la hauteur de référence est re-mesurée ici.
   const fitVpMq = window.matchMedia("(min-width: 1024px)");
   const applyFitVp = () => {
     const on = fitVpMq.matches;
     document.body.classList.toggle("fit-vp", on);
-    if (!on) clearFitZoom();
-    scheduleFitZoom();
+    if (!on) {
+      clearFitZoom();
+      invalidateFitBase();            // reset à la sortie de fit-vp
+      return;
+    }
+    scheduleFitZoom(true);            // (re-)mesure + applique le zoom
   };
   applyFitVp();
   if (typeof fitVpMq.addEventListener === "function") {
@@ -1813,8 +1937,19 @@ function init() {
   } else if (typeof fitVpMq.addListener === "function") {
     fitVpMq.addListener(applyFitVp);   // anciens navigateurs (Safari < 14)
   }
-  window.addEventListener("resize", scheduleFitZoom);
-  scheduleFitZoom();
+  // Resize : re-base la hauteur de référence puis recalcule le zoom.
+  window.addEventListener("resize", () => scheduleFitZoom(true));
+  scheduleFitZoom(true);
+
+  // Une fois les polices web chargées la hauteur naturelle peut changer : on
+  // re-base le zoom une seule fois (rare). Géré en optionnel (vieillissement
+  // navigateur) sans jamais faire planter le reste.
+  if (document.fonts && typeof document.fonts.ready === "object") {
+    document.fonts.ready.then(() => {
+      if (!document.body.classList.contains("fit-vp")) return;
+      scheduleFitZoom(true);
+    }).catch(() => {});
+  }
 
   // Polling du badge serveur toutes les 5 s (pauses si l'onglet est caché)
   loadServerStatus();

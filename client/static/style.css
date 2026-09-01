@@ -426,15 +426,31 @@ body.fit-vp .layout > .col-main {
   position: static;
   top: auto;
   height: auto;
+  display: flex;              /* colonne : héro/live/engine fixes, historique extensible */
+  flex-direction: column;
   overflow: hidden;
 }
 body.fit-vp .layout > .col-side {
   flex: 2 1 0;
   min-width: 0;
   min-height: 0;
+  /* COLONNE SANS SCROLL : les cartes gardent leur taille naturelle et restent
+     toujours visibles (le zoom fit-vp fait tenir la page). Le seul scroll
+     autorisé est celui de la LISTE d'historique, à l'intérieur de sa carte
+     (.col-main > .card > .history-list).
+     FAILLSAFE : overflow-y auto discret (+ scrollbar fine) — filet de sécurité
+     pour tout contenu latéral apparu APRÈS la mesure de fit-vp (ex. résultat de
+     « Tester la connexion » / save-feedback) qui sinon clipperait la carte. */
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 0.5rem;
   overflow-y: auto;
-  overflow-x: hidden;
-  padding-bottom: 2rem;
+  scrollbar-width: thin;   /* scrollbar discrète Firefox (WebKit a déjà sa règle globale) */
+}
+/* Min-height sur la carte historique : évite l'effondrement (~0) si le
+   live-transcript apparaît après la mesure de fit-vp. */
+body.fit-vp .layout > .col-main > .card {
+  min-height: 220px;
 }
 }
 
@@ -837,7 +853,12 @@ input[type="checkbox"] {
   /* Desktop : la liste remplit l'espace restant de la carte, pas de max. */
   .history-list { max-height: none; }
 }
-.history-empty { color: var(--text-faint); font-size: 0.86rem; }
+.history-empty {
+  color: var(--text-faint);
+  font-size: 0.86rem;
+  margin: auto;          /* centre horizontalement + verticalement dans la liste (flex column, flex:1) */
+  text-align: center;    /* texte multi-lignes centré */
+}
 .history-item {
   border-radius: 16px;
   padding: 0.9rem 1rem;
