@@ -381,6 +381,16 @@ function renderConfig() {
   if ($("hero-hotkey")) $("hero-hotkey").textContent = c.hotkey || "—";
   // NB : plus de scheduleFitZoom() ici — remplir la config ne change pas le
   // zoom. Le scale ne se recalcule que sur resize / first-run.
+  //
+  // EXCEPTION one-shot : le premier rendu effectif de la config (au hello) peut
+  // arriver APRÈS la première mesure de fit-vp et changer la hauteur naturelle
+  // de .col-side (libellés/raccourcis injectés). On re-base le zoom UNE seule
+  // fois ; les rendus suivants (polling, save) ne re-déclenchent plus rien.
+  if (!fitConfigInvalidated) {
+    fitConfigInvalidated = true;
+    invalidateFitBase();
+    scheduleFitZoom(true);
+  }
   updateHeroMicLabel();
 }
 
@@ -1193,9 +1203,11 @@ const RING = {
   recording: false,   // enregistrement en cours (frame consommée)
   // File de relecture des événements audio WS : le serveur broadcast par
   // paquets (~0.2 s) une LISTE d'événements {levels, recording} (≈20 frames de
-  // 50 ms). handleAudio pousse chaque frame ici ; la boucle rAF les consomme à
-  // la cadence réelle (frameMs) pour un mouvement continu à 20 fps effectifs
-  // même si le rendu tourne à 60 fps.
+  // 50 ms). handleAudio pousse chaque frame ici ; la boucle rAF les consomme
+  // via un JITTER BUFFER « temps réel décalé » (voir consumeAudioFrames) : on
+  // attend que la file soit garnie (≥3 frames ≈ 150 ms) puis on lit à un taux
+  // adaptatif pour garder une profondeur stable → mouvement CONTINU de l'anneau
+  // (une cible toutes les ~50-90 ms) quel que soit le jitter réseau/broadcast.
   audioQueue: [],     // file bornée {levels:[..], recording:bool}
   frameMs: 50,        // cadence de production d'une frame (50 ms)
   lastFrameTime: 0,   // horloge (performance.now) de la dernière consommation
@@ -1327,11 +1339,23 @@ function handleAudio(data) {
   }
 }
 
-// Consomme la file à la cadence réelle des frames (frameMs). Horloge via
+// Consomme la file via un JITTER BUFFER « temps réel décalé ». Horloge via
 // performance.now : on accumule le temps écoulé et on avance d'autant de
-// frames que nécessaire, en gardant la dernière comme cible courante. Si la
-// file est vide (paquet WS suivant pas encore arrivé), on garde la dernière
-// cible — le lerp continue simplement de converger, sans saut.
+// frames que nécessaire, en gardant la dernière comme cible courante.
+//
+// Principe : le serveur broadcast par paquets (~0.2 s) ; si on consommait dès
+// réception, la file se viderait immédiatement et l'anneau figerait entre deux
+// paquets (escalier ~5 fps). On attend donc que la file soit garnie (≥3 frames
+// ≈ 150 ms) avant de démarrer la lecture, puis on lit à un TAUX ADAPTATIF pour
+// garder une profondeur de buffer stable (targetDepth = 4) :
+//   - file profonde (8) → lecture accélérée (~25-50 ms) pour rattraper ;
+//   - file peu garnie (1-2) → lecture ralentie (~65-90 ms) pour laisser le
+//     buffer se remplir ;
+//   - file vide → on n'accumule PAS d'horloge (lastFrameTime = now) pour éviter
+//     une rafale au paquet suivant.
+// Résultat : une cible toutes les ~50-90 ms quel que soit le jitter → mouvement
+// CONTINU, sans jamais se vider ni sauter. Latence visuelle résultante ≈
+// 150-250 ms — c'est voulu (« temps réel décalé »).
 // L'AGC (adaptiveGain) s'applique PAR FRAME jouée, pas seulement sur la
 // dernière reçue : le gain suit donc le replay à 20 fps.
 function consumeAudioFrames() {
@@ -1341,6 +1365,7 @@ function consumeAudioFrames() {
   // figé. Au démarrage les frames repoussent et sont consommées normalement.
   if (!(app && app.state && app.state.running)) {
     RING.audioQueue.length = 0;
+    RING.lastFrameTime = 0;   // ré-arme l'horloge au (re)démarrage
     return;
   }
   const now = performance.now();
@@ -1348,11 +1373,27 @@ function consumeAudioFrames() {
     RING.lastFrameTime = now;      // amorce l'horloge, rien à consommer encore
     return;
   }
-  const elapsed = now - RING.lastFrameTime;
-  if (elapsed < RING.frameMs) return;
 
-  let steps = Math.floor(elapsed / RING.frameMs);
-  RING.lastFrameTime += steps * RING.frameMs;
+  // Jitter buffer : on ne démarre la lecture qu'une fois la file garnie
+  // (≥3 frames ≈ 150 ms). En dessous, on ne consomme RIEN et on n'accumule pas
+  // d'horloge (lastFrameTime = now) → pas de rafale au paquet suivant.
+  if (RING.audioQueue.length < 3) {
+    RING.lastFrameTime = now;
+    return;
+  }
+
+  // Taux de lecture adaptatif pour garder une profondeur stable (targetDepth).
+  // Recalculé à chaque tick : file profonde → accélère, file peu garnie → ralentit.
+  const targetDepth = 4;
+  const depth = RING.audioQueue.length;
+  const rate = Math.max(0.5, Math.min(1.8, targetDepth / Math.max(depth, 1)));
+  const interval = RING.frameMs * rate;   // intervalle effectif entre deux frames
+
+  const elapsed = now - RING.lastFrameTime;
+  if (elapsed < interval) return;
+
+  let steps = Math.floor(elapsed / interval);
+  RING.lastFrameTime += steps * interval;
 
   let consumed = null;
   // Rejoue au plus `steps` frames (borné par la longueur de la file : on ne
@@ -1687,10 +1728,19 @@ function initHotkeyCapture() {
 //     normal, on n'écrase jamais le contenu.
 // Sans JS (ou .fit-vp absent) : comportement scroll normal existant.
 // --------------------------------------------------------------------------
+// Source de vérité unique de la fenêtre desktop (≥1024 px) : utilisée par
+// fitZoom (ré-engagement), init (bascule de classe) et applyFitVp.
+const FIT_VP_MQ = window.matchMedia("(min-width: 1024px)");
+
 let fitZoomTimer = null;
 // Hauteur naturelle de référence (px) mesurée une fois, conservée entre deux
 // resize. 0 = pas encore mesurée → fitZoom la mesure au passage.
 let fitBaseNatural = 0;
+// One-shot : le premier rendu effectif de la config (renderConfig au hello)
+// peut changer la hauteur naturelle de .col-side APRÈS la première mesure de
+// fit-vp → on re-base le zoom UNE seule fois ; les rendus suivants (polling,
+// save) ne re-déclenchent plus rien.
+let fitConfigInvalidated = false;
 
 function zoomSupported() {
   return "zoom" in document.body.style;
@@ -1713,45 +1763,65 @@ function scheduleFitZoom(remeasure) {
   fitZoomTimer = setTimeout(fitZoom, 150);
 }
 
-// Mesure la hauteur naturelle du conteneur (zoom=1, hauteur auto déverrouillée)
-// et la stocke comme référence de base. Retourne la valeur mémorisée.
+// Mesure la hauteur naturelle de la colonne de DROITE (.col-side) et la stocke
+// comme référence de base. Retourne la valeur mémorisée.
+//
+// Le zoom est calibré pour que la colonne de droite remplisse exactement la
+// hauteur ; la colonne gauche s'adapte (cadre historique réduit). On mesure
+// donc UNIQUEMENT .col-side (jamais le .layout entier, qui serait influencé par
+// la colonne gauche).
 function measureFitBase() {
   const layout = document.querySelector(".layout");
-  if (!layout) return 0;
+  const colSide = document.querySelector(".col-side");
+  if (!layout || !colSide) return 0;
   layout.style.zoom = "1";
   layout.style.transform = "";
   layout.style.width = "";
   layout.style.height = "auto";   // déverrouille la hauteur pour une mesure fiable
-
-  // La base mesure la structure fixe + une hauteur NOMINALE de liste ;
-  // l'excédent est absorbé par le scroll interne de #history-list.
-  // Sans cette neutralisation, la carte historique (.col-main > .card) est en
-  // flex:1/min-height:0 sur #history-list flex:1/overflow-y:auto → sans hauteur
-  // fixe sur un ancêtre, la chaîne flex grandit au CONTENU (50 items ≈ 4000px+),
-  // ce qui gonfle fitBaseNatural, pousse scale au plancher et désactive par
-  // erreur la branche de secours fit-vp au first-run et à chaque resize.
-  const histCard = document.querySelector(".col-main > .card");
-  const histList = document.getElementById("history-list");
-  const saved = { card: "", list: "" };
-  if (histCard) { saved.card = histCard.style.cssText; histCard.style.cssText = "flex:0 0 auto; height:200px;"; }
-  if (histList) { saved.list = histList.style.cssText; histList.style.cssText = "max-height:180px; overflow:hidden;"; }
+  // La colonne de droite doit être mesurée à sa hauteur NATURELLE : on
+  // déverrouille sa hauteur inline et on neutralise le stretch du flex parent
+  // (align-items:stretch) qui sinon la forcerait à remplir le conteneur.
+  const savedSide = { height: colSide.style.height, alignSelf: colSide.style.alignSelf };
+  colSide.style.height = "auto";
+  colSide.style.alignSelf = "flex-start";
 
   try {
     const tbEl = document.querySelector(".topbar");
     const topbar = tbEl ? tbEl.offsetHeight : 64;
     const available = Math.max(220, window.innerHeight - topbar - 32);
-    fitBaseNatural = layout.offsetHeight || available;
+    fitBaseNatural = colSide.offsetHeight || available;
     return fitBaseNatural;
   } finally {
     // Restauration systématique (mesure jamais laissée en état dégradé).
-    if (histCard) histCard.style.cssText = saved.card;
-    if (histList) histList.style.cssText = saved.list;
+    colSide.style.height = savedSide.height;
+    colSide.style.alignSelf = savedSide.alignSelf;
   }
 }
 
 function fitZoom() {
   const layout = document.querySelector(".layout");
-  if (!layout || !document.body.classList.contains("fit-vp")) return;
+  if (!layout) return;
+
+  // Ré-engagement via la MQ desktop (source de vérité unique) :
+  //  - hors fenêtre ≥1024 px → on sort de fit-vp (purge des styles inline +
+  //    re-mesure à la prochaine entrée) et on s'arrête ;
+  //  - dans la fenêtre mais classe absente (ex. sortie pour « config trop
+  //    longue ») → on la ré-ajoute et on re-mesure la base fraîchement
+  //    (add → mesure → éventuel re-exit, tout synchrone, aucun paint
+  //    intermédiaire). La base n'est re-mesurée que sur ces entrées
+  //    légitimes, jamais sur un changement de contenu.
+  if (!FIT_VP_MQ.matches) {
+    if (document.body.classList.contains("fit-vp")) {
+      clearFitZoom();
+      document.body.classList.remove("fit-vp");
+      invalidateFitBase();
+    }
+    return;
+  }
+  if (!document.body.classList.contains("fit-vp")) {
+    document.body.classList.add("fit-vp");
+    invalidateFitBase();
+  }
 
   const tbEl = document.querySelector(".topbar");
   const topbar = tbEl ? tbEl.offsetHeight : 64;
@@ -1920,7 +1990,7 @@ function init() {
   // la classe est retirée on purge les styles inline posés par fitZoom. Le
   // zoom ne se recale QUE sur first-run / resize / fonts.ready (jamais sur un
   // changement de contenu) → la hauteur de référence est re-mesurée ici.
-  const fitVpMq = window.matchMedia("(min-width: 1024px)");
+  const fitVpMq = FIT_VP_MQ;
   const applyFitVp = () => {
     const on = fitVpMq.matches;
     document.body.classList.toggle("fit-vp", on);

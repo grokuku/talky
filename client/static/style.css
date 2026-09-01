@@ -428,7 +428,11 @@ body.fit-vp .layout > .col-main {
   height: auto;
   display: flex;              /* colonne : héro/live/engine fixes, historique extensible */
   flex-direction: column;
-  overflow: hidden;
+  /* FAILLSAFE discret : si héro/live fixes + min-height:220 de la carte
+     historique dépassent la hauteur verrouillée, on scrolle plutôt que de
+     clipper. Le scroll normal reste celui de #history-list (interne). */
+  overflow-y: auto;
+  scrollbar-width: thin;
 }
 body.fit-vp .layout > .col-side {
   flex: 2 1 0;
@@ -440,10 +444,12 @@ body.fit-vp .layout > .col-side {
      (.col-main > .card > .history-list).
      FAILLSAFE : overflow-y auto discret (+ scrollbar fine) — filet de sécurité
      pour tout contenu latéral apparu APRÈS la mesure de fit-vp (ex. résultat de
-     « Tester la connexion » / save-feedback) qui sinon clipperait la carte. */
+     « Tester la connexion » / save-feedback) qui sinon clipperait la carte.
+     max-height:100% : la colonne ne dépasse jamais la hauteur verrouillée. */
   display: flex;
   flex-direction: column;
   padding-bottom: 0.5rem;
+  max-height: 100%;
   overflow-y: auto;
   scrollbar-width: thin;   /* scrollbar discrète Firefox (WebKit a déjà sa règle globale) */
 }
