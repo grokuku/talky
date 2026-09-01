@@ -22,6 +22,7 @@ deux ports hôtes (8000 REST / 9090 WS) vers ce port unique.
 import json
 import logging
 import os
+import secrets
 import threading
 import wave
 from typing import Optional
@@ -361,7 +362,8 @@ if API_KEY:
         if request.url.path in EXEMPT_PATHS:   # healthcheck Docker sans secret
             return await call_next(request)
         auth = request.headers.get("authorization", "")
-        if auth != f"Bearer {API_KEY}":
+        expected = f"Bearer {API_KEY}".encode("utf-8")
+        if not secrets.compare_digest(auth.encode("utf-8"), expected):
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
         return await call_next(request)
 
@@ -501,7 +503,8 @@ async def realtime_endpoint(ws: WebSocket) -> None:
     # --- Authentification optionnelle (TALKY_API_KEY) -----------------------
     if API_KEY:
         auth = ws.headers.get("authorization", "")
-        if auth != f"Bearer {API_KEY}":
+        expected = f"Bearer {API_KEY}".encode("utf-8")
+        if not secrets.compare_digest(auth.encode("utf-8"), expected):
             await ws.close(code=1008)
             return
     # --- Limite de sessions simultanées (TALKY_MAX_CLIENTS) -----------------

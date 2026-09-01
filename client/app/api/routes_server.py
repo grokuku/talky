@@ -16,6 +16,7 @@ SERVER_DEFAULTS). La disponibilité se sonde via /docs (repli /openapi.json) et
 la liste des modèles vient de GET /v1/models (repli local).
 """
 
+import asyncio
 import time
 
 from fastapi import APIRouter
@@ -44,14 +45,16 @@ def _server_context() -> tuple[str, str]:
 async def server_status() -> dict:
     """État de la connexion au serveur talky (interrogé par le frontend)."""
     server_url, api_key = _server_context()
-    ping_result = transcriber_client.ping(
-        server_url, api_key, timeout=SERVER_PROBE_TIMEOUT)
+    ping_result = await asyncio.to_thread(
+        transcriber_client.ping, server_url, api_key,
+        timeout=SERVER_PROBE_TIMEOUT)
     reachable = bool(ping_result.get("reachable", False))
     # list_models est LOCAL (aucun réseau) : on renvoie toujours la liste des
     # modèles connus supportés par whisper-live — le frontend a une liste à
     # afficher même serveur injoignable.
-    models = transcriber_client.list_models(
-        server_url, api_key, timeout=SERVER_PROBE_TIMEOUT)
+    models = await asyncio.to_thread(
+        transcriber_client.list_models, server_url, api_key,
+        timeout=SERVER_PROBE_TIMEOUT)
 
     payload = {
         "reachable": reachable,
@@ -86,14 +89,16 @@ async def server_test(body: dict | None = None) -> dict:
     # on l'utilise ; sinon on retombe sur la config sauvegardée.
     api_key = body.get("server_api_key", saved_key)
     started = time.monotonic()
-    ping_result = transcriber_client.ping(
-        server_url, api_key, timeout=SERVER_PROBE_TIMEOUT)
+    ping_result = await asyncio.to_thread(
+        transcriber_client.ping, server_url, api_key,
+        timeout=SERVER_PROBE_TIMEOUT)
     reachable = bool(ping_result.get("reachable", False))
     latency_ms = round((time.monotonic() - started) * 1000, 1) if reachable else None
     # list_models LOCAL en repli (modèles connus) — le serveur répond via
     # GET /v1/models quand il est joignable.
-    models = transcriber_client.list_models(
-        server_url, api_key, timeout=SERVER_PROBE_TIMEOUT)
+    models = await asyncio.to_thread(
+        transcriber_client.list_models, server_url, api_key,
+        timeout=SERVER_PROBE_TIMEOUT)
     return {
         "reachable": reachable,
         "url": server_url,
@@ -109,8 +114,9 @@ async def server_registry() -> dict:
     """Modèles disponibles à l'installation (relaie GET /v1/registry du
     serveur talky). Toujours un dict {"models": [...]} ([] si échec)."""
     server_url, api_key = _server_context()
-    models = transcriber_client.list_registry(
-        server_url, api_key, timeout=SERVER_PROBE_TIMEOUT)
+    models = await asyncio.to_thread(
+        transcriber_client.list_registry, server_url, api_key,
+        timeout=SERVER_PROBE_TIMEOUT)
     return {"models": models, "server_url": server_url}
 
 
@@ -126,8 +132,9 @@ async def server_download_model(body: dict) -> dict:
         return {"ok": False, "model": "", "error": "Modèle manquant"}
     server_url, api_key = _server_context()
     try:
-        result = transcriber_client.download_model(
-            server_url, api_key, model=model, timeout=600.0)
+        result = await asyncio.to_thread(
+            transcriber_client.download_model, server_url, api_key,
+            model=model, timeout=600.0)
         return {"ok": True, "model": model, "result": result}
     except transcriber_client.TranscriptionError as exc:
         return {"ok": False, "model": model, "error": str(exc)}
