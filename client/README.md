@@ -197,6 +197,11 @@ login** (hotkeys actives dès la session). Sans `auto_start`, cliquez sur
 - Le panneau web montre en temps réel : l'état du moteur (ready / recording /
   transcribing / success / error), l'historique des transcriptions, la config et
   le **statut du serveur** (modèle, device `cuda`, compute_type `int8`).
+- **Anneau radial « V1 Hub »** : l'anneau au centre de la carte héro est le
+  bouton principal — un clic démarre/arrête le moteur (équivalent de l'ancien
+  interrupteur). Ses 36 rayons reflètent le niveau du micro en temps réel
+  (couleurs par état, halo pendant l'enregistrement) et le badge de statut
+  affiche un chrono « Enregistrement · MM:SS » pendant la dictée.
 
 ## 7. Dépannage
 
@@ -216,7 +221,7 @@ cd client
 pytest tests/ -q
 ```
 
-**205 tests** — aucun matériel ni serveur requis : tout est mocké (evdev,
+**348 tests** — aucun matériel ni serveur requis : tout est mocké (evdev,
 sounddevice, pyperclip, httpx, subprocess, websocket). Couvre config (dont
 `ws_port`), audio, hotkeys, injecteur, client de transcription (REST),
 client WebSocket WhisperLive (handshake, PCM16, EOF), moteur (batch + continu)

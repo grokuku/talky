@@ -274,37 +274,6 @@ body::before {
 .dot.rose { background: var(--rose); box-shadow: 0 0 8px rgba(255, 168, 184, 0.6); }
 .dot.sky  { background: var(--sky); box-shadow: 0 0 8px rgba(156, 214, 255, 0.6); }
 
-/* ------------------------------ Interrupteur ----------------------------- */
-.switch {
-  position: relative;
-  width: 64px; height: 32px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.10);
-  -webkit-backdrop-filter: blur(12px);
-  backdrop-filter: blur(12px);
-  cursor: pointer;
-  transition: background var(--t-med) var(--ease), border-color var(--t-med) var(--ease);
-  flex-shrink: 0;
-}
-.switch .switch-knob {
-  position: absolute;
-  top: 3px; left: 3px;
-  width: 24px; height: 24px;
-  border-radius: 999px;
-  background: #64748b;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
-  transition: transform var(--t-med) var(--ease),
-              background var(--t-med) var(--ease),
-              box-shadow var(--t-med) var(--ease);
-}
-.switch.on { background: rgba(143, 240, 196, 0.22); border-color: rgba(143, 240, 196, 0.5); }
-.switch.on .switch-knob {
-  transform: translateX(32px);
-  background: var(--mint);
-  box-shadow: 0 0 12px rgba(143, 240, 196, 0.45);
-}
-
 /* -------------------------------- Boutons -------------------------------- */
 .btn {
   display: inline-flex;
@@ -504,7 +473,7 @@ body::before {
 
 /* =========================================================================
  * CARTE HÉRO — élément dominant de la page : micro, badge d'état,
- * interrupteur, waveform, hotkey, dernière dictée.
+ * anneau radial (Hub), hotkey, dernière dictée.
  * Bordure + halo suivent --accent (theming par état).
  * ========================================================================= */
 .hero-card {
@@ -529,34 +498,83 @@ body::before {
 }
 body[data-status="recording"] .hero-card::before { opacity: 0.9; }
 
-.hero-top {
+/* Hub V1 : anneau radial (bouton principal) à gauche + colonne info à droite */
+.hub {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 0.8rem 1rem;
+  gap: 1.4rem;
   flex-wrap: wrap;
 }
-.hero-identity { display: flex; align-items: center; gap: 0.8rem; min-width: 0; }
-.hero-mic-icon {
-  width: 44px; height: 44px;
-  border-radius: 14px;
-  display: flex; align-items: center; justify-content: center;
+
+/* Bouton principal : l'anneau radial (start/stop moteur) */
+.ring-btn {
+  position: relative;
+  width: 150px;
+  height: 150px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
   flex-shrink: 0;
-  background: linear-gradient(135deg, rgba(143, 240, 196, 0.16), rgba(156, 214, 255, 0.10));
-  border: 1px solid var(--border);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ring-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.ring-btn .ring-mic {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 34px; height: 34px;
+  display: flex; align-items: center; justify-content: center;
   color: var(--accent);
-  box-shadow: 0 0 18px -4px var(--accent-glow);
-  transition: color var(--t-med) var(--ease), box-shadow var(--t-med) var(--ease);
+  pointer-events: none;
+  transition: color var(--t-med) var(--ease);
 }
-.hero-mic-icon svg { width: 22px; height: 22px; }
-body[data-status="recording"] .hero-mic-icon { animation: mic-pulse 1.3s ease-in-out infinite; }
-@keyframes mic-pulse {
-  0%, 100% { box-shadow: 0 0 14px -4px var(--accent-glow); }
-  50%      { box-shadow: 0 0 26px 0 var(--accent-glow); }
+.ring-btn .ring-mic svg { width: 26px; height: 26px; }
+.ring-btn .ring-hint {
+  position: absolute;
+  left: 0; right: 0;
+  bottom: -1.1rem;
+  text-align: center;
+  font-size: 0.66rem;
+  color: var(--text-faint);
+  white-space: nowrap;
+  pointer-events: none;
 }
-.hero-title h2 { margin: 0; font-size: 1.02rem; font-weight: 700; line-height: 1.2; }
+#audio-canvas {
+  display: block;
+  width: 150px;
+  height: 150px;
+}
+
+/* Colonne info à droite de l'anneau */
+.hub-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  min-width: 0;
+  flex: 1 1 260px;
+}
+.hub-line {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-width: 0;
+}
+.hub-mic-label {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+}
 .hero-mic-name {
-  margin: 0.12rem 0 0;
+  margin: 0;
   font-size: 0.74rem;
   color: var(--text-dim);
   white-space: nowrap;
@@ -564,88 +582,20 @@ body[data-status="recording"] .hero-mic-icon { animation: mic-pulse 1.3s ease-in
   text-overflow: ellipsis;
   max-width: 34vw;
 }
-.hero-controls {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  flex-wrap: wrap;
-}
+.hub-mic .icon-btn { margin-left: auto; }
 
-/* Conteneur waveform : fond légèrement plus sombre pour le contraste */
-.hero-wave {
-  position: relative;         /* ancre le libellé superposé */
-  margin-top: 0.9rem;
-  border-radius: 16px;
-  padding: 0.35rem 0.5rem;
-  background: rgba(20, 24, 33, 0.55);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  min-height: 86px;
-  display: flex;
-  align-items: center;
-}
-#audio-canvas {
-  display: block;
-  width: 100%;                /* largeur fluide */
-  height: 76px;               /* 72–88 px : lisibilité des barres miroir */
-  min-height: 76px;
-}
-/* Libellé superposé (monitoring au repos / transcription / erreur) */
-.audio-placeholder {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 1rem;
-  font-size: 0.78rem;
-  color: var(--text-dim);
-  font-style: italic;
-  pointer-events: none;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  transition: opacity var(--t-med) var(--ease);
-}
-.audio-placeholder.hidden { opacity: 0; }
-.audio-placeholder.dim { color: var(--text-faint); }
-
-.hero-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.8rem;
-  margin-top: 0.85rem;
-  flex-wrap: wrap;
-}
-/* Chip kbd du raccourci clavier */
-.hotkey-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.76rem;
-  color: var(--text-dim);
-  white-space: nowrap;
-}
-.hotkey-chip kbd {
-  font-family: var(--font-mono);
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: var(--lavender);
-  background: rgba(201, 184, 255, 0.10);
-  border: 1px solid rgba(201, 184, 255, 0.30);
-  border-bottom-width: 2px;
-  border-radius: 8px;
-  padding: 0.15rem 0.5rem;
-  text-transform: uppercase;
-}
-/* Dernière transcription (texte borné sur 2 lignes, copie rapide) */
-.hero-last {
+/* Dernière dictée : encadré avec liseré gauche teinté par --accent */
+.hub-last {
   display: grid;
   grid-template-columns: auto 1fr auto;
   align-items: center;
   gap: 0.6rem;
-  flex: 1 1 240px;
-  min-width: 0;
+  padding: 0.55rem 0.7rem;
+  border-radius: 12px;
+  background: rgba(20, 24, 33, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-left: 2px solid var(--accent);
+  transition: border-color var(--t-med) var(--ease);
 }
 .hero-last-label {
   font-size: 0.66rem;
@@ -666,6 +616,36 @@ body[data-status="recording"] .hero-mic-icon { animation: mic-pulse 1.3s ease-in
   -webkit-box-orient: vertical;
 }
 .hero-last-text.empty { font-style: italic; }
+
+/* Ligne raccourci : chip kbd + « ou cliquer sur l'anneau » */
+.hub-hint {
+  flex-wrap: wrap;
+}
+.hub-hint-or {
+  font-size: 0.74rem;
+  color: var(--text-faint);
+  font-style: italic;
+}
+.hotkey-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.76rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.hotkey-chip kbd {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--lavender);
+  background: rgba(201, 184, 255, 0.10);
+  border: 1px solid rgba(201, 184, 255, 0.30);
+  border-bottom-width: 2px;
+  border-radius: 8px;
+  padding: 0.15rem 0.5rem;
+  text-transform: uppercase;
+}
 
 /* ------------------------------ Formulaires ------------------------------ */
 .field { margin-bottom: 0.9rem; }
@@ -1019,7 +999,7 @@ input[type="checkbox"] {
 
 /* --------------------------- Accessibilité / divers ---------------------- */
 :focus-visible { outline: 2px solid rgba(156, 214, 255, 0.7); outline-offset: 2px; }
-.btn:focus-visible, .switch:focus-visible, .hotkey-pick:focus-visible,
+.btn:focus-visible, .hotkey-pick:focus-visible,
 .link-danger:focus-visible, .copy-btn:focus-visible, .icon-btn:focus-visible {
   outline-offset: 2px;
 }
@@ -1134,12 +1114,11 @@ input[type="checkbox"] {
  * ========================================================================= */
 @media (max-width: 640px) {
   .hero-card { padding: 0.9rem 0.9rem 0.85rem; }
+  .hub { flex-direction: column; align-items: center; gap: 1.2rem; }
+  .hub-info { width: 100%; }
   .hero-mic-name { max-width: 60vw; }
-  .hero-mic-icon { width: 38px; height: 38px; }
-  .hero-last { grid-template-columns: 1fr auto; grid-template-rows: auto auto; }
-  .hero-last-label { grid-column: 1 / -1; }
-  #audio-canvas { height: 72px; }
-  .hero-foot { flex-direction: column; align-items: stretch; }
+  .hub-last { grid-template-columns: 1fr auto; grid-template-rows: auto auto; }
+  .hub-last .hero-last-label { grid-column: 1 / -1; }
 }
 
 @media (prefers-reduced-motion: reduce) {

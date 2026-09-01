@@ -11,8 +11,9 @@
  *
  * Theming par état : body[data-status="idle|ready|recording|transcribing|error"]
  * pilote --accent (badge, carte héro, caret) ; plus de curseur « progress ».
- * Visualisation audio : waveform à barres miroir façon messagerie vocale
- * (envelope follower + lerp rAF), avec monitoring animé au repos.
+ * Visualisation audio : anneau radial « V1 Hub » (36 rayons autour d'un cercle
+ * central, couleurs --accent/--accent-glow lues à chaque frame, halo en
+ * enregistrement).
  * ========================================================================= */
 
 "use strict";
@@ -238,6 +239,29 @@ const STATUS_META = {
   stopping:     { label: "Arrêt…",                 group: "idle",         live: false, pulse: true },
 };
 
+// Chrono d'enregistrement : affiche « Enregistrement · MM:SS » dans le badge
+// de statut pendant la dictée (mis à jour toutes les 500 ms, nettoyé sinon).
+let chronoTimer = null;
+let chronoStart = 0;
+
+function startChrono() {
+  if (chronoTimer) return;
+  chronoStart = Date.now();
+  updateChrono();
+  chronoTimer = setInterval(updateChrono, 500);
+}
+function stopChrono() {
+  if (chronoTimer) { clearInterval(chronoTimer); chronoTimer = null; }
+}
+function updateChrono() {
+  const el = $("status-text");
+  if (!el) return;
+  const sec = Math.floor((Date.now() - chronoStart) / 1000);
+  const mm = String(Math.floor(sec / 60)).padStart(2, "0");
+  const ss = String(sec % 60).padStart(2, "0");
+  el.textContent = `Enregistrement · ${mm}:${ss}`;
+}
+
 function updateState() {
   const status = app.state && app.state.status;
   const meta = STATUS_META[status] || STATUS_META.error;
@@ -248,15 +272,31 @@ function updateState() {
   const dot = $("status-dot");
   dot.classList.toggle("pulse", !!meta.pulse);
   dot.classList.toggle("live", !!meta.live);
-  $("status-text").textContent = meta.label;
   $("status-detail").textContent = (app.state && app.state.status_msg) || "";
 
-  // Interrupteur On/Off (role="switch" dans index.html)
+  // Chrono d'enregistrement : « Enregistrement · MM:SS » pendant la dictée,
+  // libellé statique sinon (les autres états gardent leur libellé existant).
+  if (status === "recording") {
+    startChrono();
+  } else {
+    stopChrono();
+    $("status-text").textContent = meta.label;
+  }
+
+  // Bouton principal (l'anneau radial, role="switch" dans index.html) :
+  // aria-checked synchronisé avec l'état réel du moteur.
   const running = !!(app.state && app.state.running);
   const toggle = $("power-toggle");
   toggle.classList.toggle("on", running);
   toggle.setAttribute("aria-checked", String(running));
-  $("power-knob").classList.toggle("on", running);
+
+  // Anneau radial : synchronise l'état d'enregistrement et, moteur arrêté,
+  // ramène les niveaux cibles à zéro pour que les rayons redescendent au
+  // minimum via le lerp existant (au lieu de rester figés sur l'anneau éteint).
+  RING.recording = (status === "recording");
+  if (!running) {
+    RING.levels = RING.levels.map(() => 0);
+  }
 
   // NB : plus de curseur « progress » global pendant la transcription —
   // le theming data-status (halo + badge) signale déjà l'état occupé.
@@ -265,10 +305,6 @@ function updateState() {
   // pendant l'enregistrement (et masquée sinon). Quand l'enregistrement
   // s'arrête (success/ready/error/idle), on vide la zone.
   syncLiveTranscript(status);
-
-  // Waveform : bascule figée/monitoring + libellé selon le nouvel état.
-  syncVizMode();
-  syncVizLabel();
 }
 
 function updateMotorInfo() {
@@ -422,6 +458,10 @@ async function quickApply() {
 // --------------------------------------------------------------------------
 async function togglePower() {
   const running = !!(app.state && app.state.running);
+  const toggle = $("power-toggle");
+  // Garde anti-double-clic : on désactive le bouton pendant l'await du fetch
+  // (réactivé en finally, que l'appel réussisse ou échoue).
+  toggle.disabled = true;
   try {
     if (running) {
       await api("/api/engine/stop", { method: "POST" });
@@ -432,6 +472,8 @@ async function togglePower() {
     }
   } catch (err) {
     showToast(`Erreur : ${err.message}`);
+  } finally {
+    toggle.disabled = false;
   }
 }
 
@@ -1060,360 +1102,177 @@ function initConfirmModal() {
     }
   });
 }
-
 // --------------------------------------------------------------------------
-// Visualisation audio — waveform à barres miroir façon messagerie vocale
+// Visualisation audio — anneau radial « V1 Hub »
 // --------------------------------------------------------------------------
-// Chaque événement WS "audio" ({levels: [floats -1..1], recording}) arrive à
-// ~20 fps, MÊME au repos (recording=false : micro ouvert, pas de dictée).
+// Chaque événement WS "audio" ({levels: [64 floats -1..1], recording}) arrive
+// à ~20 fps, MÊME au repos (recording=false : micro ouvert, pas de dictée).
 //
-// Pipeline de rendu :
-//   1. auto-gain : pic courant amorti (retombée ×0.96/événement), gain cible
-//      0.9/pic plafonné à 20×, lissé — les niveaux bruts de parole (~0.05)
-//      sont amplifiés pour occuper la hauteur des barres ;
-//   2. envelope follower par échantillon : env = max(|v|·gain, env·0.85)
-//      → attaque instantanée (max), relâchement lent (décroissance ×0.85) ;
-//   3. accumulation en colonnes de 20 échantillons (~64 colonnes/s) : chaque
-//      colonne garde le max local + une retombée douce entre colonnes ; la
-//      trace la plus récente est ancrée à droite (défilement vers la gauche,
-//      ~2.5 s de mémoire visible) ;
-//   4. boucle requestAnimationFrame : hauteurs affichées interpolées vers les
-//      colonnes cibles (lerp 0.35) → rendu 60 fps sans à-coups.
-//   Chaque barre : 3 px arrondis, gap 1 px, symétrique autour de l'axe central,
-//   dégradé vertical mint → sky (+ halo doux pendant l'enregistrement).
-//
-// Modes d'affichage :
-//   - live       (recording=true)        : défilement temps réel + halo ;
-//   - frozen     (status=transcribing)   : trace figée estompée ;
-//   - monitoring (micro ouvert au repos) : barres quasi plates animées d'une
-//     micro-respiration sinusoïdale + libellé « Micro actif · en attente » ;
-//   - moteur arrêté : barres au minimum, sans animation.
-// prefers-reduced-motion : ni interpolation ni respiration ; redessin
-// uniquement à l'arrivée de nouvelles données (rendu allégé).
-const VIZ_BAR_W = 3;            // largeur d'une barre (px CSS)
-const VIZ_GAP = 1;              // espace entre barres (px CSS)
-const VIZ_AMP = 0.42;           // amplitude max (fraction de la hauteur)
-const VIZ_RELEASE = 0.85;       // release de l'envelope follower (par échantillon)
-const VIZ_COL_RELEASE = 0.90;   // retombée douce entre colonnes
-const VIZ_SAMPLES_PER_COL = 20; // échantillons entrants par colonne (~64 col/s)
-const VIZ_LERP = 0.35;          // interpolation des hauteurs affichées
-const VIZ_MAX_GAIN = 20;        // plafond d'auto-gain (bruit de fond)
-
-const viz = {
+// Rendu : 36 rayons autour d'un cercle central (canvas 150×150, DPR géré).
+//   - les 64 niveaux sont regroupés en 36 rayons (RMS par groupe, valeurs
+//     absolues) ;
+//   - lissage lerp 0.35 en rAF (60 fps) ;
+//   - longueur d'un rayon = base 5 px + valeur × ~30 px, depuis un rayon
+//     interne ~40 px ;
+//   - couleurs --accent / --accent-glow lues à chaque frame via
+//     getComputedStyle(document.body) → thématisation automatique par état
+//     (body[data-status]) ;
+//   - halo (glow) uniquement pendant l'enregistrement ;
+//   - moteur arrêté (idle/off) : rayons au minimum, opacité réduite.
+// prefers-reduced-motion : ni interpolation ni halo ; redessin uniquement à
+// l'arrivée de nouvelles données (rendu allégé).
+const RING = {
   canvas: null,
   ctx: null,
   dpr: 1,
-  cols: [],          // colonnes cibles 0..1 (ancien → récent)
-  disp: [],          // hauteurs affichées (interpolées)
-  env: 0,            // envelope follower courant
-  colPeak: 0,        // max local en cours de colonne
-  colCount: 0,       // échantillons accumulés dans la colonne en cours
-  peak: 0.02,        // pic brut amorti (auto-gain)
-  gain: 1,           // gain lissé
-  recording: false,  // enregistrement en cours (dernier événement reçu)
-  frozen: false,     // transcription serveur : trace figée estompée
-  lastAudioAt: 0,    // horodatage du dernier événement audio (garde-fou flux mort)
-  labelKey: "",      // dernier libellé affiché (évite les écritures DOM à 20 fps)
-  grad: null,        // dégradé vertical mint → sky (recréé si taille change)
-  gradW: 0, gradH: 0,
+  size: 150,          // taille CSS du canvas (px)
+  rays: 36,           // nombre de rayons
+  base: 5,            // longueur de base d'un rayon (px CSS)
+  amp: 30,            // valeur × amp = longueur additionnelle (px CSS)
+  inner: 40,          // rayon interne (px CSS)
+  lerp: 0.35,         // interpolation des niveaux affichés
+  levels: [],         // niveaux cibles 0..1 (36)
+  disp: [],           // niveaux affichés (interpolés)
+  recording: false,   // enregistrement en cours (dernier événement reçu)
   raf: 0,
-  dirty: true,       // nouvelles données à dessiner (mode reduced-motion)
+  dirty: true,        // nouvelles données à dessiner (mode reduced-motion)
   reduced: (typeof matchMedia === "function")
     ? matchMedia("(prefers-reduced-motion: reduce)")
     : { matches: false, addEventListener() {} },
 };
 
-function initAudioCanvas() {
-  if (viz.canvas) return;
-  viz.canvas = $("audio-canvas");
-  if (!viz.canvas) return;
-  viz.ctx = viz.canvas.getContext("2d");
-  resizeAudioCanvas();
-  // Suit le layout fluide (largeur du canvas variable) et force un redraw.
-  window.addEventListener("resize", () => {
-    resizeAudioCanvas();
-    viz.dirty = true;
-  });
-  // Les changements de préférence sont rares, mais on redessine proprement.
-  if (viz.reduced.addEventListener) {
-    viz.reduced.addEventListener("change", () => { viz.dirty = true; });
+function initRing() {
+  if (RING.canvas) return;
+  RING.canvas = $("audio-canvas");
+  if (!RING.canvas) return;
+  RING.ctx = RING.canvas.getContext("2d");
+  resizeRing();
+  // Le canvas est carré et fixe (150×150) : on ne suit que le DPR.
+  window.addEventListener("resize", () => { resizeRing(); RING.dirty = true; });
+  if (RING.reduced.addEventListener) {
+    RING.reduced.addEventListener("change", () => { RING.dirty = true; });
   }
-  if (!viz.raf) viz.raf = requestAnimationFrame(vizFrame);
-  syncVizLabel();
+  if (!RING.raf) RING.raf = requestAnimationFrame(ringFrame);
 }
 
-function resizeAudioCanvas() {
-  if (!viz.canvas) return;
-  viz.dpr = window.devicePixelRatio || 1;
-  const rect = viz.canvas.getBoundingClientRect();
-  // Fallback : si le layout n'est pas encore calculé (rect width = 0), on
-  // garde les attributs HTML du canvas comme valeurs par défaut.
-  const cssW = rect.width || (viz.canvas.width / viz.dpr) || 600;
-  const cssH = rect.height || (viz.canvas.height / viz.dpr) || 76;
-  const w = Math.max(1, Math.floor(cssW * viz.dpr));
-  const h = Math.max(1, Math.floor(cssH * viz.dpr));
-  if (viz.canvas.width !== w || viz.canvas.height !== h) {
-    viz.canvas.width = w;
-    viz.canvas.height = h;
-    viz.grad = null;          // dégradé à recréer à la nouvelle taille
+function resizeRing() {
+  if (!RING.canvas) return;
+  RING.dpr = window.devicePixelRatio || 1;
+  const w = Math.max(1, Math.floor(RING.size * RING.dpr));
+  if (RING.canvas.width !== w || RING.canvas.height !== w) {
+    RING.canvas.width = w;
+    RING.canvas.height = w;
   }
 }
 
-// Nombre de colonnes visibles (une barre par colonne, ancrées à droite).
-function vizCapacity() {
-  if (!viz.canvas) return 16;
-  const pitch = VIZ_BAR_W + VIZ_GAP;
-  const cssW = viz.canvas.width / (viz.dpr || 1);
-  return Math.max(16, Math.floor(cssW / pitch));
+// Regroupe les 64 niveaux bruts en 36 rayons : RMS par groupe (valeurs
+// absolues). Retourne un tableau de 36 valeurs 0..1.
+function groupRingLevels(levels) {
+  const n = RING.rays;
+  const out = new Array(n).fill(0);
+  const total = levels.length;
+  for (let i = 0; i < n; i++) {
+    const start = Math.floor(i * total / n);
+    const end = Math.floor((i + 1) * total / n);
+    let sum = 0, count = 0;
+    for (let j = start; j < end; j++) {
+      const v = Number(levels[j]);
+      if (Number.isFinite(v)) { sum += v * v; count++; }
+    }
+    out[i] = count ? Math.sqrt(sum / count) : 0;
+  }
+  return out;
 }
 
 function handleAudio(data) {
-  if (!viz.canvas) initAudioCanvas();
-  if (!viz.canvas) return;
+  if (!RING.canvas) initRing();
+  if (!RING.canvas) return;
 
   const levels = data && Array.isArray(data.levels) ? data.levels : null;
   if (!levels) return;
 
-  const recording = !!(data && data.recording);
-
-  // (Re)prise d'enregistrement : on repart d'une trace vierge.
-  if (recording && !viz.recording) {
-    viz.cols.length = 0;
-    viz.disp.length = 0;
-    viz.env = 0;
-    viz.colPeak = 0;
-    viz.colCount = 0;
-    viz.peak = 0.02;
-  }
-  viz.recording = recording;
-  viz.lastAudioAt = performance.now();
-  syncVizMode();
-  syncVizLabel();
-
-  // Contexte 2D indisponible (canvas non rendu, env. de test) : on met
-  // quand même à jour les libellés, seul le pipeline de dessin est ignoré.
-  if (!viz.ctx) return;
-
-  // Transcription serveur en cours : la trace est figée (plus rien n'est
-  // poussé, le rendu reste affiché estompé jusqu'au retour au repos).
-  if (viz.frozen) return;
-
-  // --- Auto-gain -----------------------------------------------------------
-  // Le pic brut amorti (retombée ×0.96 par événement ≈ demi-vie ~0.4 s)
-  // donne un gain stable, sans pompage visible pendant le défilement.
-  let blockPeak = 0;
-  for (let i = 0; i < levels.length; i++) {
-    const v = Number(levels[i]);
-    if (Number.isFinite(v) && Math.abs(v) > blockPeak) blockPeak = Math.abs(v);
-  }
-  viz.peak = Math.max(blockPeak, viz.peak * 0.96);
-  const targetGain = Math.min(VIZ_MAX_GAIN, 0.9 / Math.max(viz.peak, 0.004));
-  viz.gain += (targetGain - viz.gain) * 0.15;
-
-  // --- Envelope follower + accumulation en colonnes -------------------------
-  for (let i = 0; i < levels.length; i++) {
-    let v = Number(levels[i]);
-    if (!Number.isFinite(v)) continue;
-    v = Math.max(-1, Math.min(1, v));
-    // Attaque rapide (max), relâchement lent (décroissance ×0.85).
-    viz.env = Math.max(Math.abs(v) * viz.gain, viz.env * VIZ_RELEASE);
-    viz.colPeak = Math.max(viz.colPeak, viz.env);
-    if (++viz.colCount >= VIZ_SAMPLES_PER_COL) {
-      pushVizColumn(Math.min(1, viz.colPeak));
-      viz.colPeak = 0;
-      viz.colCount = 0;
-    }
-  }
-  viz.dirty = true;
+  RING.recording = !!(data && data.recording);
+  RING.levels = groupRingLevels(levels);
+  RING.dirty = true;
 }
 
-// Empile une colonne (max local de l'enveloppe) avec retombée douce, la plus
-// récente à droite ; la plus ancienne sort à gauche une fois la fenêtre pleine.
-function pushVizColumn(v) {
-  const prev = viz.cols.length ? viz.cols[viz.cols.length - 1] : 0;
-  viz.cols.push(Math.max(v, prev * VIZ_COL_RELEASE));
-  const cap = vizCapacity();
-  while (viz.cols.length > cap) viz.cols.shift();
-}
+// Boucle rAF : interpolation des niveaux affichés puis dessin.
+// En reduced-motion : aucun lissage ni halo, redessin sur données neuves.
+function ringFrame() {
+  RING.raf = requestAnimationFrame(ringFrame);
+  if (!RING.ctx || document.hidden) return;
 
-// État figé = transcription serveur en cours (hors enregistrement).
-// Garde-fou « flux audio mort » : les événements audio (20 fps) sont la
-// vérité sur le micro ; mais si plus aucun n'arrive (>1 s) alors que le
-// moteur n'est plus en enregistrement, on se resynchronise sur l'état
-// moteur (sinon le libellé de monitoring resterait masqué pour toujours).
-function syncVizMode() {
-  const st = app.state && app.state.status;
-  const audioFresh = viz.lastAudioAt > 0
-    && (performance.now() - viz.lastAudioAt) < 1000;
-  if (!audioFresh) {
-    if (viz.recording && st !== "recording") viz.recording = false;
-    if (!viz.recording) viz.frozen = st === "transcribing";
-  } else if (!viz.recording) {
-    viz.frozen = false;   // le micro reprend : la trace repart
-  }
-}
-
-// Libellé superposé au canvas selon le mode :
-// monitoring au repos, transcription en cours, moteur arrêté…
-function syncVizLabel() {
-  const el = $("audio-placeholder");
-  if (!el) return;
-  const st = app.state && app.state.status;
-  // Clé de state pour n'écrire le DOM que sur changement réel (20 fps).
-  const key = `${viz.recording ? "R" : viz.frozen ? "F" : "-"}|${st || ""}`;
-  if (key === viz.labelKey) return;
-  viz.labelKey = key;
-
-  if (viz.recording) {
-    el.classList.add("hidden");       // place aux barres temps réel
-    return;
-  }
-  el.classList.remove("hidden");
-
-  let text, dim = false;
-  if (st == null) {
-    text = "Initialisation…";
-  } else if (viz.frozen || st === "transcribing") {
-    text = "Transcription serveur en cours…";
-    dim = true;
-  } else if (st === "booting") {
-    text = "Démarrage du moteur…";
-  } else if (st === "stopping") {
-    text = "Arrêt du moteur…";
-  } else if (st === "error") {
-    text = "Erreur moteur — voir le détail sous l'historique";
-    dim = true;
-  } else if (st === "idle") {
-    text = "Moteur arrêté — démarrez le moteur pour dicter";
-    dim = true;
-  } else {
-    // ready / success : micro ouvert, en attente d'une dictée
-    text = "Micro actif · en attente de dictée";
-  }
-  el.textContent = text;
-  el.classList.toggle("dim", dim);
-}
-
-// Boucle rAF : interpolation des hauteurs affichées puis dessin.
-// En reduced-motion : aucun lissage ni animation, redessin sur données neuves.
-function vizFrame(t) {
-  viz.raf = requestAnimationFrame(vizFrame);
-  if (!viz.ctx || document.hidden) return;
-
-  const reduced = viz.reduced.matches;
+  const reduced = RING.reduced.matches;
   if (reduced) {
-    if (!viz.dirty) return;
-    viz.dirty = false;
-    drawViz(t, true);
+    if (!RING.dirty) return;
+    RING.dirty = false;
+    drawRing(true);
     return;
   }
 
-  // Interpolation des hauteurs affichées vers les colonnes cibles (60 fps,
-  // lerp 0.35) : lisse le pas de 20 fps des événements WS sans effacer
-  // complètement les transitoires.
-  const n = vizCapacity();
-  if (viz.disp.length !== n) viz.disp.length = n;
-  const cols = viz.cols;
-  const base = cols.length - n;   // < 0 tant que la trace ne remplit pas l'écran
-  const k = VIZ_LERP;
-  for (let i = 0; i < n; i++) {
-    const target = (base + i >= 0) ? (cols[base + i] || 0) : 0;
-    const cur = viz.disp[i] || 0;
-    viz.disp[i] = cur + (target - cur) * k;
+  const k = RING.lerp;
+  for (let i = 0; i < RING.rays; i++) {
+    const target = RING.levels[i] || 0;
+    const cur = RING.disp[i] || 0;
+    RING.disp[i] = cur + (target - cur) * k;
   }
-  drawViz(t, false);
+  drawRing(false);
 }
 
-// Dessin : barres verticales arrondies miroir (3 px / gap 1 px), dégradé
-// vertical mint → sky, halo doux en enregistrement, respiration au repos.
-function drawViz(t, reduced) {
-  resizeAudioCanvas();
-  if (!viz.ctx) return;
-  const ctx = viz.ctx;
-  const W = viz.canvas.width;
-  const H = viz.canvas.height;
-  const dpr = viz.dpr || 1;
+// Dessin : 36 rayons autour d'un cercle central. Couleurs --accent /
+// --accent-glow lues à chaque frame (thématisation par état). Halo uniquement
+// en enregistrement ; rayons au minimum + opacité réduite quand moteur arrêté.
+function drawRing(reduced) {
+  resizeRing();
+  if (!RING.ctx) return;
+  const ctx = RING.ctx;
+  const dpr = RING.dpr || 1;
+  const W = RING.canvas.width;
+  const H = RING.canvas.height;
   ctx.clearRect(0, 0, W, H);
 
-  const pitch = (VIZ_BAR_W + VIZ_GAP) * dpr;
-  const barW = VIZ_BAR_W * dpr;
-  const n = Math.max(8, Math.floor(W / pitch));
-  const mid = H / 2;
-  const maxHalf = H * VIZ_AMP;   // demi-hauteur max (marge haut/bas)
-  const minHalf = 1.5 * dpr;     // barre minimale : trait continu discret
+  const cs = getComputedStyle(document.body);
+  const accent = (cs.getPropertyValue("--accent") || "").trim() || "#8ff0c4";
+  const glow = (cs.getPropertyValue("--accent-glow") || "").trim() || accent;
 
-  // Mode courant : live / frozen (transcription) / monitoring (repos).
-  const mode = viz.recording ? "live" : (viz.frozen ? "frozen" : "monitor");
+  const cx = W / 2;
+  const cy = H / 2;
+  const inner = RING.inner * dpr;
+  const base = RING.base * dpr;
+  const amp = RING.amp * dpr;
+  const n = RING.rays;
+  const recording = RING.recording;
   const running = !!(app.state && app.state.running);
 
-  // Dégradé vertical mint → sky, centré sur l'axe (miroir cohérent) —
-  // recréé uniquement quand la taille du canvas change.
-  if (!viz.grad || viz.gradW !== W || viz.gradH !== H) {
-    const g = ctx.createLinearGradient(0, mid - maxHalf, 0, mid + maxHalf);
-    g.addColorStop(0, "#8ff0c4");    // mint
-    g.addColorStop(0.5, "#96e3e1"); // mélange (centre)
-    g.addColorStop(1, "#9cd6ff");    // sky
-    viz.grad = g;
-    viz.gradW = W;
-    viz.gradH = H;
-  }
-  ctx.fillStyle = viz.grad;
+  // Moteur arrêté (idle/off) : rayons au minimum, opacité réduite.
+  ctx.globalAlpha = running ? 1 : 0.45;
 
-  // Halo doux uniquement pendant l'enregistrement (jamais en reduced-motion).
-  if (mode === "live" && !reduced) {
-    ctx.shadowColor = "rgba(255, 168, 184, 0.5)";
-    ctx.shadowBlur = 10 * dpr;
-  }
-  if (mode === "frozen") ctx.globalAlpha = 0.4;       // barres estompées
-  else if (mode === "monitor") ctx.globalAlpha = 0.7; // barres quasi plates
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = Math.max(1, 2 * dpr);
+  ctx.lineCap = "round";
 
-  const cols = viz.cols;
-  const base = cols.length - n;
-  const disp = viz.disp;
-  // Micro-respiration : vague sinusoïdale discrète parcourant les barres
-  // (amplitude totale ~2–4 px) — signale que le micro est sous tension.
-  const breathe = mode === "monitor" && running && !reduced;
-  const tsec = t / 1000;
+  if (recording && !reduced) {
+    ctx.shadowColor = glow;
+    ctx.shadowBlur = 8 * dpr;
+  }
 
   for (let i = 0; i < n; i++) {
-    let v;
-    if (mode === "monitor") {
-      v = (base + i >= 0) ? (cols[base + i] || 0) : 0;
-      if (breathe) v += 0.045 + 0.035 * Math.sin(tsec * 2.0 - i * 0.3);
-    } else {
-      v = reduced ? ((base + i >= 0) ? (cols[base + i] || 0) : 0)
-                  : (disp[i] || 0);
-    }
-    const half = Math.max(minHalf, Math.min(maxHalf, v * maxHalf));
-    const x = W - (n - i) * pitch + (pitch - barW) / 2;
-    barPath(ctx, x, mid - half, barW, half * 2, barW / 2);
-    ctx.fill();
+    const v = reduced ? (RING.levels[i] || 0) : (RING.disp[i] || 0);
+    const len = base + v * amp;
+    const ang = (i / n) * Math.PI * 2 - Math.PI / 2;
+    const x0 = cx + Math.cos(ang) * inner;
+    const y0 = cy + Math.sin(ang) * inner;
+    const x1 = cx + Math.cos(ang) * (inner + len);
+    const y1 = cy + Math.sin(ang) * (inner + len);
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+    ctx.stroke();
   }
 
   ctx.globalAlpha = 1;
   ctx.shadowBlur = 0;
 }
-
-// Chemin d'une barre à extrémités arrondies (équivalent roundRect, qui n'est
-// pas disponible dans tous les moteurs — fallback manuel volontaire).
-function barPath(ctx, x, y, w, h, r) {
-  if (r > w / 2) r = w / 2;
-  if (r > h / 2) r = h / 2;
-  const x2 = x + w;
-  const y2 = y + h;
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.lineTo(x2 - r, y);
-  ctx.arc(x2 - r, y + r, r, -Math.PI / 2, 0);
-  ctx.lineTo(x2, y2 - r);
-  ctx.arc(x2 - r, y2 - r, r, 0, Math.PI / 2);
-  ctx.lineTo(x + r, y2);
-  ctx.arc(x + r, y2 - r, r, Math.PI / 2, Math.PI);
-  ctx.lineTo(x, y + r);
-  ctx.arc(x + r, y + r, r, Math.PI, 1.5 * Math.PI);
-  ctx.closePath();
-}
-
 // --------------------------------------------------------------------------
 // Transcription en direct (mode continu, événements WS "partial_transcript")
 // --------------------------------------------------------------------------
@@ -1736,7 +1595,7 @@ async function initLoad() {
 
 function init() {
   bindEvents();
-  initAudioCanvas();
+  initRing();
   _initComboboxEvents();
   initLoad();
   connectWS();

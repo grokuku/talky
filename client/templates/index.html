@@ -49,11 +49,15 @@
     <!-- ===================== COLONNE GAUCHE ===================== -->
     <section class="col-main">
 
-      <!-- ===== CARTE HÉRO : micro, état, waveform, hotkey, dernière dictée ===== -->
+      <!-- ===== CARTE HÉRO : anneau radial (bouton principal), statut, hotkey, dernière dictée ===== -->
       <section class="hero-card glass" aria-label="Studio de dictée">
-        <div class="hero-top">
-          <div class="hero-identity">
-            <span class="hero-mic-icon" aria-hidden="true">
+        <div class="hub">
+          <!-- Anneau radial : bouton principal start/stop (role=switch) -->
+          <button id="power-toggle" type="button" class="ring-btn" role="switch" aria-checked="false"
+                  aria-label="Démarrer ou arrêter le moteur" title="Démarrer / arrêter le moteur">
+            <canvas id="audio-canvas" width="150" height="150" role="img"
+                    aria-label="Visualisation du niveau du micro : anneau radial temps réel"></canvas>
+            <span class="ring-mic" aria-hidden="true">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                    stroke-linecap="round" stroke-linejoin="round">
                 <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/>
@@ -61,63 +65,54 @@
                 <line x1="12" y1="19" x2="12" y2="22"/>
               </svg>
             </span>
-            <div class="hero-title">
-              <h2>Micro</h2>
-              <p class="hero-mic-name" id="hero-mic-name">Micro par défaut</p>
+            <span class="ring-hint">cliquer · démarrer / arrêter</span>
+          </button>
+
+          <!-- Colonne info -->
+          <div class="hub-info">
+            <div class="hub-line hub-mic">
+              <span class="hub-mic-label">Micro</span>
+              <span id="hero-mic-name" class="hero-mic-name">Micro par défaut</span>
+              <button id="btn-restart" class="icon-btn" title="Redémarrer le moteur"
+                      aria-label="Redémarrer le moteur">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M23 4v6h-6"/><path d="M1 20v-6h6"/>
+                  <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                </svg>
+              </button>
             </div>
-          </div>
 
-          <div class="hero-controls">
-            <!-- Badge de statut moteur -->
-            <span id="status-badge" class="status-badge" title="État du moteur de dictée">
-              <span id="status-dot" class="status-dot"></span>
-              <span id="status-text">Hors ligne</span>
-            </span>
+            <div class="hub-line">
+              <span id="status-badge" class="status-badge" title="État du moteur de dictée">
+                <span id="status-dot" class="status-dot"></span>
+                <span id="status-text">Hors ligne</span>
+              </span>
+            </div>
 
-            <!-- Interrupteur On/Off (role=switch, aria-checked piloté par app.js) -->
-            <button id="power-toggle" role="switch" aria-checked="false" aria-label="Démarrer ou arrêter le moteur"
-                    class="switch" title="Démarrer / arrêter le moteur">
-              <span id="power-knob" class="switch-knob"></span>
-            </button>
+            <div class="hub-line hub-last">
+              <span class="hero-last-label">Dernière dictée</span>
+              <span id="hero-last-text" class="hero-last-text empty">Aucune transcription pour l'instant.</span>
+              <button id="hero-last-copy" class="icon-btn" title="Copier la dernière transcription"
+                      aria-label="Copier la dernière transcription" disabled>
+                <svg class="ic-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <rect x="9" y="9" width="13" height="13" rx="2"/>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                </svg>
+                <svg class="ic-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
+                     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M20 6L9 17l-5-5"/>
+                </svg>
+              </button>
+            </div>
 
-            <!-- Redémarrer -->
-            <button id="btn-restart" class="btn ghost" title="Redémarrer le moteur">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-                   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M23 4v6h-6"/><path d="M1 20v-6h6"/>
-                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
-              </svg>
-              <span class="btn-label">Redémarrer</span>
-            </button>
-          </div>
-        </div>
-
-        <!-- Waveform à barres miroir (canvas redimensionné par app.js via rAF) -->
-        <div class="hero-wave">
-          <canvas id="audio-canvas" width="600" height="76" role="img"
-                  aria-label="Visualisation du niveau du micro : waveform à barres, temps réel pendant la dictée"></canvas>
-          <span id="audio-placeholder" class="audio-placeholder" aria-hidden="true">Initialisation…</span>
-        </div>
-
-        <div class="hero-foot">
-          <span class="hotkey-chip" title="Raccourci clavier de la dictée">
-            <kbd id="hero-hotkey">—</kbd><span>pour dicter</span>
-          </span>
-          <div class="hero-last">
-            <span class="hero-last-label">Dernière dictée</span>
-            <span id="hero-last-text" class="hero-last-text empty">Aucune transcription pour l'instant.</span>
-            <button id="hero-last-copy" class="icon-btn" title="Copier la dernière transcription"
-                    aria-label="Copier la dernière transcription" disabled>
-              <svg class="ic-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-                   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <rect x="9" y="9" width="13" height="13" rx="2"/>
-                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-              </svg>
-              <svg class="ic-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
-                   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M20 6L9 17l-5-5"/>
-              </svg>
-            </button>
+            <div class="hub-line hub-hint">
+              <span class="hotkey-chip" title="Raccourci clavier de la dictée">
+                <kbd id="hero-hotkey">—</kbd><span>pour dicter</span>
+              </span>
+              <span class="hub-hint-or">ou cliquer sur l'anneau</span>
+            </div>
           </div>
         </div>
       </section>

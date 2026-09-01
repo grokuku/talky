@@ -305,7 +305,7 @@ factory.py build_app() + lifespan + /static + / → index.html. dependencies.py 
 Design verre (palette #141821, mint/sky/lavender/peach/rose). **Mise en page pleine largeur, 2 colonnes.**
 
 **Fonctionnalités implémentées (certaines non prévues au roadmap initial) :**
-- **Courbe audio temps réel (waveform)** ✅ : affichage de la forme d'onde (~64 valeurs, 20 fps) reçue via WebSocket (événement `audio`). Auto-gain (normalisation des niveaux). Style actuel : affichage de la frame courante. ⏳ Le style « sismographe qui défile vers la gauche » (historique défilant) n'est pas encore implémenté.
+- **Anneau radial « V1 Hub »** ✅ : visualisation du niveau du micro (~64 valeurs, 20 fps) reçue via WebSocket (événement `audio`) — 36 rayons autour d'un cercle central (RMS par groupe, lerp 0.35 en rAF, canvas 150×150 avec DPR), couleurs `--accent`/`--accent-glow` par état, halo en enregistrement, rayons minimaux + opacité réduite au repos. L'anneau est le bouton principal start/stop (role=switch). Remplace l'ancienne waveform à barres miroir.
 - **Sélecteur de modèle** ✅ : datalist alimentée par `/api/server/status` + presets usuels (saisie libre). **Plus d'installation de modèles côté UI** (modèle fixé par `WHISPERLIVE_MODEL` côté serveur).
 - **Zone « Transcription en direct »** ✅ : affichage des transcriptions partielles/finales en mode continu (événement `partial_transcript` via WebSocket).
 - **Toggle mode continu** ✅ : bascule entre mode batch et mode continu (continuous_mode dans la config).
@@ -402,18 +402,26 @@ fastapi, uvicorn, httpx, **websockets**, numpy, sounddevice, evdev, pyperclip, p
 - **Fallback** automatique sur le batch complet si la session WS échoue (connexion, envoi, réception) — l'audio complet reste toujours accumulé par AudioRecorder : la dictée n'est jamais perdue.
 - **Latence cible** : premier segment ~1-3 s après le début de la parole (VAD serveur temps réel, large-v3-turbo FP16 sur RTX 4070).
 
-### 9.2 Courbe audio — style sismographe défilant ⏳
+### 9.2 Visualisation audio — anneau radial « V1 Hub » ✅
 
-**Symptôme** : la courbe audio actuelle affiche la frame courante (waveform instantanée, ~64 valeurs à 20 fps). Le style « sismographe qui défile vers la gauche » (historique défilant des frames précédentes) n'est pas encore implémenté.
+**Symptôme** : la courbe audio (waveform à barres miroir) a été remplacée par
+l'anneau radial « V1 Hub » validé en mockup : 36 rayons autour d'un cercle
+central (canvas 150×150, DPR géré), regroupement RMS des 64 niveaux du payload
+`audio`, lissage lerp 0.35 en rAF, couleurs `--accent`/`--accent-glow` lues à
+chaque frame (thématisation par état), halo uniquement en enregistrement,
+rayons au minimum + opacité réduite quand moteur arrêté. L'anneau est le bouton
+principal start/stop (`#power-toggle`, role=switch).
 
 **Ce qui existe** :
-- Auto-gain (normalisation des niveaux) ✅
-- Affichage temps réel de la frame courante ✅
-- Toggle d'affichage demandé mais pas encore fait ⏳
+- Anneau radial 36 rayons (RMS par groupe, valeurs absolues) ✅
+- Lissage lerp 0.35 en rAF + DPR ✅
+- Couleurs `--accent`/`--accent-glow` par état (getComputedStyle) ✅
+- Halo en enregistrement, rayons minimaux + opacité réduite au repos ✅
+- Chrono « Enregistrement · MM:SS » dans le badge de statut ✅
+- Clic sur l'anneau = start/stop moteur (aria-checked synchronisé) ✅
 
 **À faire** :
-- Implémenter un historique circulaire des frames dans le frontend (canvas, défilement gauche).
-- Ajouter un toggle pour activer/désactiver le style sismographe défilant.
+- Aucun (le style « sismographe défilant » n'est plus retenu).
 
 ---
 
@@ -431,7 +439,7 @@ fastapi, uvicorn, httpx, **websockets**, numpy, sounddevice, evdev, pyperclip, p
 ### Client (CachyOS)
 - **OS** : CachyOS (Arch Linux, KDE Plasma, Wayland)
 - **Python** : 3.14
-- **Tests** : **205 tests verts** (pytest, sans matériel ni serveur)
+- **Tests** : **348 tests verts** (pytest, sans matériel ni serveur)
 - **websockets** : remplace `websocket-client` (mode continu WebSocket WhisperLive, paquet Arch `python-websockets`)
 - **setup.sh** : script d'installation idempotent avec gestion des paquets Arch (dont python-websockets)
 
@@ -459,6 +467,6 @@ Le dossier `ref/` (projet Windows original qui a servi d'inspiration initiale) a
 ## 12. Prochaines étapes suggérées
 
 1. **Mode continu WebSocket WhisperLive validé en E2E réel** ✅ (fait lors de la migration) : dictée longue avec F8 maintenu → texte qui apparaît pendant l'enregistrement (partial_transcript, VAD serveur) → injection propre à la relâche ; coupure serveur en cours de dictée → fallback batch + message clair ; toggle continuous_mode à chaud.
-2. **Implémenter la courbe audio style sismographe** ⏳ : historique circulaire défilant dans le frontend (canvas), toggle on/off.
+2. **Visualisation audio — anneau radial « V1 Hub »** ✅ (fait le 2025-06-10) : la courbe sismographe défilante est remplacée par l'anneau radial validé en mockup — 36 rayons (RMS des 64 niveaux, lerp 0.35 en rAF), canvas 150×150 avec DPR, couleurs `--accent`/`--accent-glow` par état, halo en enregistrement, rayons minimaux + opacité réduite au repos, chrono « Enregistrement · MM:SS », l'anneau est le bouton principal start/stop (role=switch, aria-checked synchronisé).
 3. **Finaliser le frontend** ⏳ : dernière passe sur le panneau après la migration (suppression des références « registry/installation de modèles » restantes côté UI, libellés whisper-live).
 4. **Éventuel retour au WebSocket Realtime speaches** : non prévu — le WebSocket WhisperLive natif couvre le besoin (VAD serveur temps réel). Si speaches corrigeait un jour le bug #567, ce ne serait pas une priorité : whisper-live est désormais la cible verrouillée.
