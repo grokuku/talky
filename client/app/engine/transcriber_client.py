@@ -145,6 +145,53 @@ def _auth_headers(api_key: str) -> dict:
     return {}
 
 
+def _detail_from_response(response, maxlen: int = 200) -> str:
+    """Extrait le champ ``detail`` d'une réponse d'erreur FastAPI/starlette.
+
+    Le serveur talky (FastAPI) renvoie ses erreurs en JSON
+    ``{"detail": "<message>"}`` ; une erreur de validation pydantic est
+    renvoyée en liste ``[{"detail": {...}, "loc": [...]}, ...]``. Cette
+    aide récupère le message réel (tronqué à ``maxlen`` caractères) pour le
+    rendre visible à l'utilisateur au lieu de cacher la cause derrière un
+    message générique. Retourne ``""`` si la réponse n'apporte rien
+    d'exploitable (body non-JSON, détail absent ou vide).
+    """
+    try:
+        payload = response.json()
+    except Exception:  # noqa: BLE001 — body non-JSON / inaccessible
+        return ""
+
+    def _fmt(detail) -> str:
+        if isinstance(detail, str):
+            return detail.strip()
+        if isinstance(detail, dict):
+            # Erreur de validation pydantic : message = premier champ texte
+            # exploitable ("msg", "message", ...).
+            for key in ("msg", "message", "error", "detail", "type"):
+                val = detail.get(key)
+                if isinstance(val, str) and val.strip():
+                    return val.strip()
+        return ""
+
+    if isinstance(payload, dict):
+        return _fmt(payload.get("detail"))[:maxlen]
+    if isinstance(payload, list):
+        # Validation pydantic : liste d'erreurs {"loc", "msg", "type"}. On
+        # prend le premier message texte exploitable (via _fmt).
+        for item in payload:
+            txt = _fmt(item)
+            if txt:
+                return txt[:maxlen]
+    return ""
+
+
+def _detail_suffix(response) -> str:
+    """Suffixe à coller à un message d'erreur FR : ``" : <détail serveur>"``
+    quand le serveur fournit un ``detail`` JSON, sinon ``""``."""
+    detail = _detail_from_response(response)
+    return f" : {detail}" if detail else ""
+
+
 # ---------------------------------------------------------------------------
 # Transcription
 # ---------------------------------------------------------------------------
@@ -211,7 +258,9 @@ def transcribe(audio: np.ndarray, config: dict,
     if response.status_code == 503:
         raise TranscriptionError(_ERR_BUSY)
     if response.status_code >= 500:
-        raise TranscriptionError(_ERR_SERVER)
+        # 5xx générique : on y accole le ``detail`` du serveur (ex. cause
+        # d'échec de snapshot_download) pour la rendre visible à l'utilisateur.
+        raise TranscriptionError(_ERR_SERVER + _detail_suffix(response))
     if response.status_code != 200:
         raise TranscriptionError(_ERR_UNEXPECTED)
 
@@ -366,13 +415,17 @@ def download_model(server_url: str = "", api_key: str = "", model: str = "",
     except Exception as exc:  # noqa: BLE001
         raise TranscriptionError(_ERR_CONNECT) from exc
     if response.status_code in (401, 403):
-        raise TranscriptionError(_ERR_AUTH)
+        raise TranscriptionError(_ERR_AUTH + _detail_suffix(response))
     if response.status_code == 404:
-        raise TranscriptionError(_ERR_NOT_FOUND)
+        raise TranscriptionError(_ERR_NOT_FOUND + _detail_suffix(response))
     if response.status_code >= 500:
-        raise TranscriptionError(_ERR_SERVER)
+        # 5xx : accole le ``detail`` du serveur (cause réelle de l'échec de
+        # snapshot_download, ex. "Repository not found", "GatedRepoError",
+        # "[Errno 28] No space left on device", quota HF 4xx...) pour que
+        # l'utilisateur voie la VRAIE raison au lieu du message générique.
+        raise TranscriptionError(_ERR_SERVER + _detail_suffix(response))
     if response.status_code != 200:
-        raise TranscriptionError(_ERR_UNEXPECTED)
+        raise TranscriptionError(_ERR_UNEXPECTED + _detail_suffix(response))
     try:
         return response.json()
     except Exception:  # noqa: BLE001 — JSON invalide

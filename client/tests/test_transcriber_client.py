@@ -23,6 +23,7 @@ import pytest
 
 from app.core.config import DEFAULT_CONFIG
 from app.engine.transcriber_client import (
+    _ERR_SERVER,
     TranscriptionError,
     TranscriptionResult,
     WHISPERLIVE_MODELS,
@@ -566,6 +567,89 @@ class TestDownloadModel:
             download_model("http://192.168.1.50:8000", model="Systran/faster-whisper-medium",
                            transport=transport)
         assert "Erreur serveur" in str(exc.value)
+
+    def test_500_with_json_detail_appends_server_detail(self):
+        """Un 500 avec {"detail": "<cause>"} : le détail serveur est accolé
+        au message générique (cause réelle visible par l'utilisateur).
+        Ici, le serveur renvoie la cause réelle d'un échec de téléchargement
+        (repo introuvable côté HuggingFace)."""
+        def handler(request):
+            return httpx.Response(
+                500, json={"detail": "Échec téléchargement Systran/faster-whisper-tiny : "
+                                  "Repository not found for repo Systran/faster-whisper-tiny."})
+
+        transport = httpx.MockTransport(handler)
+        with pytest.raises(TranscriptionError) as exc:
+            download_model("http://192.168.1.50:8000",
+                           model="Systran/faster-whisper-tiny", transport=transport)
+        assert "Erreur serveur" in str(exc.value)
+        assert "Repository not found" in str(exc.value)
+
+    def test_500_without_json_detail_stays_generic(self):
+        """Un 500 sans champ ``detail`` exploitable : message générique seul
+        (pas de " : " parasite)."""
+        def handler(request):
+            return httpx.Response(500, json={"error": "boom"})
+
+        transport = httpx.MockTransport(handler)
+        with pytest.raises(TranscriptionError) as exc:
+            download_model("http://192.168.1.50:8000", model="Systran/faster-whisper-medium",
+                           transport=transport)
+        assert str(exc.value) == _ERR_SERVER
+
+    def test_500_with_long_detail_is_truncated(self):
+        """Un détail très long est tronqué (~200 caractères max)."""
+        long_detail = "x" * 500
+
+        def handler(request):
+            return httpx.Response(500, json={"detail": long_detail})
+
+        transport = httpx.MockTransport(handler)
+        with pytest.raises(TranscriptionError) as exc:
+            download_model("http://192.168.1.50:8000", model="Systran/faster-whisper-medium",
+                           transport=transport)
+        assert len(str(exc.value)) <= len(_ERR_SERVER) + 3 + 200
+        # Le préfixe générique est conservé.
+        assert str(exc.value).startswith(_ERR_SERVER)
+
+    def test_500_with_plain_text_no_detail_stays_generic(self):
+        """Un 500 dont le body n'est pas du JSON : message générique seul."""
+        def handler(request):
+            return httpx.Response(500, text="Internal Server Error")
+
+        transport = httpx.MockTransport(handler)
+        with pytest.raises(TranscriptionError) as exc:
+            download_model("http://192.168.1.50:8000", model="Systran/faster-whisper-medium",
+                           transport=transport)
+        assert str(exc.value) == _ERR_SERVER
+
+    def test_500_validation_list_detail_appended(self):
+        """Erreur de validation pydantic (liste d'objets avec ``msg``) : le
+        message est extrait du premier élément."""
+        def handler(request):
+            return httpx.Response(500, json=[{"loc": ["model"],
+                                              "msg": "trop long", "type": "value_error"}])
+
+        transport = httpx.MockTransport(handler)
+        with pytest.raises(TranscriptionError) as exc:
+            download_model("http://192.168.1.50:8000", model="Systran/faster-whisper-medium",
+                           transport=transport)
+        assert "trop long" in str(exc.value)
+
+    def test_422_validation_detail_appended(self):
+        """Un 422 (validation) relève du chemin < 500 : message générique
+        « inattendu » avec le détail pydantic accolé."""
+        def handler(request):
+            return httpx.Response(422, json=[{"loc": ["body", "model"],
+                                              "msg": "field required",
+                                              "type": "missing"}])
+
+        transport = httpx.MockTransport(handler)
+        with pytest.raises(TranscriptionError) as exc:
+            download_model("http://192.168.1.50:8000", model="Systran/faster-whisper-medium",
+                           transport=transport)
+        assert "Réponse serveur inattendue" in str(exc.value)
+        assert "field required" in str(exc.value)
 
     def test_empty_model_raises(self):
         with pytest.raises(TranscriptionError) as exc:

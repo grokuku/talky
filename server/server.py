@@ -566,6 +566,10 @@ async def download_model(body: DownloadModelRequest) -> dict:
     try:
         path = await anyio.to_thread.run_sync(snapshot_download, repo_id=repo)
     except Exception as exc:  # noqa: BLE001
+        # Logguer la traceback COMPLÈTE (docker logs) pour diagnostiquer la
+        # vraie cause (repo gated/introuvable, cache non-writable/plein, …)_
+        # au lieu d'un HTTPException(500) muet qui ne montre que le `detail`.
+        log.exception("Échec téléchargement %s : %s", repo, exc)
         raise HTTPException(500, f"Échec téléchargement {repo} : {exc}") from exc
     log.info("Modèle %s installé.", model_id)
     return {"model": model_id, "repo": repo, "status": "downloaded",
