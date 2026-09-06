@@ -1805,7 +1805,12 @@ function scheduleFitZoom(remeasure) {
 // l'état dégradé (restauration systématique en finally). Utilisée par
 // measureFitBase ET par le MutationObserver (détection de croissance de
 // contenu que le ResizeObserver ne voyait pas quand la boîte est plafonnée).
-function measureColSideNatural() {
+//
+// widthPct (optionnel, %) : largeur CSS du .layout pendant la mesure. Sans
+// argument → 100% (largeur viewport). La boucle itérative de fitZoom passe
+// 100/scale pour mesurer à la même largeur que le rendu zoomé (la hauteur
+// naturelle de .col-side DÉPEND de la largeur : plus étroit → plus haut).
+function measureColSideNatural(widthPct, out) {
   const layout = document.querySelector(".layout");
   const colSide = document.querySelector(".col-side");
   if (!layout || !colSide) return 0;
@@ -1825,7 +1830,9 @@ function measureColSideNatural() {
   if (hadFitVp) document.body.classList.remove("fit-vp");
   layout.style.zoom = "1";
   layout.style.transform = "";
-  layout.style.width = "";
+  // Largeur de mesure : 100% par défaut, ou widthPct pour reproduire la
+  // largeur CSS du rendu zoomé (viewport/scale) pendant l'itération fitZoom.
+  layout.style.width = widthPct ? widthPct + "%" : "";
   layout.style.height = "auto";   // déverrouille la hauteur pour une mesure fiable
   // La colonne de droite doit être mesurée à sa hauteur NATURELLE : on
   // déverrouille sa hauteur inline et on neutralise le stretch du flex parent
@@ -1833,7 +1840,22 @@ function measureColSideNatural() {
   colSide.style.height = "auto";
   colSide.style.alignSelf = "flex-start";
   try {
-    return colSide.offsetHeight || 0;
+    const h = colSide.offsetHeight || 0;
+    if (out) {
+      // Surcoût vertical fixe autour de .col-side : son offset sous le haut
+      // du .layout (padding-top …) + le padding-bottom du .layout. zoom=1 et
+      // widthPct reproduisent le rendu, donc ces longueurs sont en CSS px
+      // « pré-zoom » comme h. fitZoom en tient compte : scale =
+      // target/(h+extra), sinon la colonne remplit target mais déborde EN
+      // INTERNE de la hauteur des paddings (bouton coupé malgré un rendu
+      // .layout == target).
+      const layRect = layout.getBoundingClientRect();
+      const colRect = colSide.getBoundingClientRect();
+      const cs = getComputedStyle(layout);
+      out.extra = Math.max(0, colRect.top - layRect.top) +
+                  (parseFloat(cs.paddingBottom) || 0);
+    }
+    return h;
   } finally {
     // Restauration systématique (mesure jamais laissée en état dégradé).
     layout.style.zoom = savedLayout.zoom;
@@ -1896,18 +1918,46 @@ function fitZoom() {
   //    colonne débordait d'une barre de scroll interne. 0.75 ne sort de
   //    fit-vp que pour les cas vraiment extrêmes (< 0.75).
   const MIN = 0.75, MAX = 1.6;
+
+  // 2b) POINT FIXE ITÉRATIF — équation circulaire : le scale dépend de la
+  //    hauteur naturelle de .col-side, qui elle-même dépend de la largeur
+  //    CSS (viewport/scale, posée pour compenser le zoom). Une mesure unique
+  //    à largeur 100% sous-estime la hauteur rendue (au rendu la colonne est
+  //    plus ÉTROITE → plus HAUTE) → débordement (bouton coupé en bas).
+  //    Résolution itérative : à chaque itération s on mesure la hauteur à la
+  //    largeur CSS qu'aura le rendu (100/s %) → sNew = target/h, et on
+  //    recommence jusqu'à convergence (|Δs| < 0.01, max 4 itérations). Chaque
+  //    mesure retire body.fit-vp + unlock, le tout synchrone dans le même
+  //    bloc (aucun paint intermédiaire), restauration en finally dans la
+  //    mesure — jamais d'état dégradé même en cas d'erreur.
   let scale = target / fitBaseNatural;
   if (scale > MAX) scale = MAX;
   if (scale < MIN) scale = MIN;
+  let measuredH = fitBaseNatural;
+  let colSideExtra = 0;
+  let iterations = 1;
+  for (let i = 0; i < 4; i++) {
+    const meta = {};
+    const h = measureColSideNatural(100 / scale, meta);
+    if (h) measuredH = h;
+    colSideExtra = meta.extra || 0;
+    let sNew = target / (measuredH + colSideExtra);
+    if (sNew > MAX) sNew = MAX;
+    if (sNew < MIN) sNew = MIN;
+    if (Math.abs(sNew - scale) < 0.01) { scale = sNew; iterations = i + 1; break; }
+    scale = sNew;
+    iterations = i + 1;
+  }
 
-  // 3) Même au zoom min (0.75) on déborde encore → on ne garde PAS d'hybride
+  // 3) Même au zoom min (0.75) on déborde encore (mesuré à la largeur rendue)
+  //    → on ne garde PAS d'hybride
   //    qui écrase le contenu : on retire la classe .fit-vp pour retomber sur le
   //    layout de BASE (sticky + scroll interne de l'historique). clearFitZoom
   //    purge les styles inline de hauteur/zoom ; invalidateFitBase force une
   //    re-mesure si une entrée (resize) tente de réactiver fit-vp plus tard.
   //    Cette branche ne se déclenche que pour les cas vraiment extrêmes
   //    (fitBaseNatural × 0.75 > target, ex. col-side 1600 / available 1180).
-  if (fitBaseNatural * MIN > target) {
+  if ((measuredH + colSideExtra) * MIN > target) {
     clearFitZoom();
     document.body.classList.remove("fit-vp");
     invalidateFitBase();
@@ -1945,6 +1995,10 @@ function fitZoom() {
   console.debug("[fitZoom]", {
     scale,
     base: fitBaseNatural,
+    measuredH,
+    colSideExtra,
+    iterations,
+    width: 100 / scale,
     lockH,
     target,
     rendered: layout.getBoundingClientRect().height,
@@ -1956,6 +2010,10 @@ function applyFitZoom(layout, scale, lockH) {
   if (zoomSupported()) {
     layout.style.height = lockH + "px";
     layout.style.zoom = String(scale);
+    // Le zoom standardisé réduit AUSSI la largeur rendue : on élargit la
+    // largeur CSS à 100/scale % pour conserver la pleine largeur (cohérent
+    // avec la largeur de mesure de la boucle itérative).
+    layout.style.width = (100 / scale) + "%";
   } else {
     layout.style.height = lockH + "px";
     layout.style.transformOrigin = "top center";
