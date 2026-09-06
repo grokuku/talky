@@ -443,12 +443,9 @@ function postConfig(payload) {
 
 async function saveConfig() {
   const btn = $("btn-save");
-  const feedback = $("save-feedback");
   const payload = collectConfig();
   btn.disabled = true;
   setBtnLabel(btn, "Enregistrement…");
-  feedback.textContent = "";
-  feedback.className = "feedback";
   // Warning non bloquant si aucun modèle n'est sélectionné : la sauvegarde
   // proceede quand même (le backend accepte un model vide).
   if (!payload.model) {
@@ -460,26 +457,20 @@ async function saveConfig() {
     app.config = res.config;
     renderConfig();
     if (res.reload_needed) {
-      feedback.textContent = "Paramètres enregistrés — redémarrage du moteur en cours…";
-      feedback.classList.add("peach");
-      showToast("Paramètres enregistrés (redémarrage requis).");
+      showToast("Paramètres enregistrés ✓ (redémarrage du moteur en cours…)");
     } else {
       const fields = (res.live_changed && res.live_changed.length)
         ? ` (${res.live_changed.join(", ")})` : "";
-      feedback.textContent = `Paramètres enregistrés — appliqués à chaud${fields}.`;
-      feedback.classList.add("mint");
-      showToast("Paramètres enregistrés (appliqués à chaud).");
+      showToast(`Paramètres enregistrés ✓${fields}`);
     }
     loadServerStatus();          // refresh badge + datalist des modèles
   } catch (err) {
-    feedback.textContent = `Erreur : ${err.message}`;
-    feedback.classList.add("rose");
     showToast(`Erreur : ${err.message}`);
   } finally {
     btn.disabled = false;
     setBtnLabel(btn, "Enregistrer les paramètres");
-    // Re-fit explicite : le feedback de sauvegarde vit dans .col-side.
-    scheduleFitZoom(true);
+    // NB : plus de scheduleFitZoom — le feedback passe désormais par un toast
+    // (hors .col-side) ; la hauteur de la colonne droite reste constante.
   }
 }
 
@@ -829,9 +820,8 @@ async function loadModelRegistry() {
 
 async function installModel() {
   const input = $("registry-search");
-  const feedback = $("install-feedback");
   const btn = $("btn-install-model");
-  if (!input || !feedback || !btn || installInFlight) return;
+  if (!input || !btn || installInFlight) return;
 
   // Priorité 1 : un modèle a été sélectionné dans le dropdown (id connu).
   // Priorité 2 : le texte tapé (id alias ou repo HF complet, ex.
@@ -840,8 +830,7 @@ async function installModel() {
   if (!model) {
     const typed = input.value.trim();
     if (!typed) {
-      feedback.className = "feedback";
-      feedback.textContent = "Choisissez ou saisissez un modèle dans la liste.";
+      showToast("Choisissez ou saisissez un modèle dans la liste.");
       return;
     }
     // Si le texte tapé correspond au nom d'un modèle connu, on utilise son id.
@@ -855,9 +844,8 @@ async function installModel() {
   installInFlight = true;
   const old = getBtnLabel(btn);
   btn.disabled = true;
-  setBtnLabel(btn, "Installation en cours…");
-  feedback.className = "feedback";
-  feedback.textContent = "Téléchargement du modèle… (cela peut prendre plusieurs minutes)";
+  setBtnLabel(btn, "Installation…");
+  showToast(`Installation de « ${model} » en cours…`);
   try {
     const res = await api("/api/server/models/download", {
       method: "POST",
@@ -865,34 +853,29 @@ async function installModel() {
       body: JSON.stringify({ model }),
     });
     if (res && res.ok) {
-      feedback.className = "feedback ok";
-      feedback.textContent = `Modèle « ${model} » installé avec succès.`;
+      showToast(`Modèle « ${model} » installé avec succès.`);
       // Rafraîchit la liste des modèles installés (dropdown de transcription).
       loadServerStatus();
     } else {
-      feedback.className = "feedback";
-      feedback.textContent = (res && res.error) || "Échec de l'installation.";
+      showToast(`Échec de l'installation : ${(res && res.error) || "erreur inconnue"}`);
     }
   } catch (err) {
-    feedback.className = "feedback";
-    feedback.textContent = "Erreur pendant l'installation : " + err;
+    showToast(`Erreur pendant l'installation : ${err}`);
   } finally {
     installInFlight = false;
     btn.disabled = false;
     setBtnLabel(btn, old);
-    // Re-fit explicite : le feedback d'installation vit dans .col-side.
-    scheduleFitZoom(true);
+    // NB : plus de scheduleFitZoom — le feedback passe par un toast ; l'état
+    // d'attente est porté par le bouton (disabled + label), la hauteur de
+    // .col-side reste donc constante.
   }
 }
 
 async function testServer() {
   const btn = $("btn-server-test");
-  const result = $("server-test-result");
   btn.disabled = true;
   const old = getBtnLabel(btn);
   setBtnLabel(btn, "Test en cours…");
-  result.className = "server-test-result";
-  result.textContent = "Vérification de la connexion…";
   try {
     // On envoie les valeurs actuellement saisies dans le formulaire (avant
     // sauvegarde) afin que le test reflète ce que l'utilisateur voit à
@@ -906,33 +889,19 @@ async function testServer() {
       }),
     });
     if (res.reachable) {
-      result.className = "server-test-result ok";
-      const latency = (res.latency_ms == null) ? "—" : `${res.latency_ms} ms`;
-      const models = (res.models || []).map((m) => escapeHtml(String(m))).join(", ")
-        || "aucun modèle listé";
-      result.innerHTML =
-        `<div class="test-title"><span class="dot mint"></span>Serveur joignable</div>
-         <div class="test-line">Latence : <strong>${latency}</strong></div>
-         <div class="test-line">Modèles : <span class="mono">${models}</span></div>`;
-      showToast("Connexion au serveur réussie.");
+      const latency = (res.latency_ms == null) ? "" : ` · ${res.latency_ms} ms`;
+      showToast(`Serveur connecté${latency}`);
     } else {
-      result.className = "server-test-result err";
-      result.innerHTML =
-        `<div class="test-title"><span class="dot rose"></span>Serveur injoignable</div>
-         <div class="test-line">${escapeHtml(res.error || "Vérifiez l'URL et la clé API.")}</div>`;
-      showToast("Connexion au serveur impossible.");
+      showToast(`Serveur injoignable : ${res.error || "vérifiez l'URL et la clé API."}`);
     }
     loadServerStatus();          // rafraîchit badge + modèles
   } catch (err) {
-    result.className = "server-test-result err";
-    result.innerHTML =
-      `<div class="test-title"><span class="dot rose"></span>Test impossible</div>
-       <div class="test-line">${escapeHtml(err.message)}</div>`;
+    showToast(`Test impossible : ${err.message}`);
   } finally {
     btn.disabled = false;
     setBtnLabel(btn, old);
-    // Re-fit explicite : le résultat du test de connexion vit dans .col-side.
-    scheduleFitZoom(true);
+    // NB : plus de scheduleFitZoom — le résultat du test passe par un toast
+    // (hors .col-side) ; la hauteur de .col-side reste constante.
   }
 }
 
