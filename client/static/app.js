@@ -389,6 +389,11 @@ function renderConfig() {
     fitFirstPending = false;
     scheduleFitZoom(true);
   }
+  // Re-fit explicite : renderConfig remplit des .value (pas de mutation du
+  // sous-arbre de .col-side), donc le MutationObserver ne se déclenche pas.
+  // On force un re-fit debouncé pour que la colonne droite remplisse toujours
+  // la hauteur après chaque rendu de la config.
+  scheduleFitZoom(true);
   updateHeroMicLabel();
 }
 
@@ -473,6 +478,8 @@ async function saveConfig() {
   } finally {
     btn.disabled = false;
     setBtnLabel(btn, "Enregistrer les paramètres");
+    // Re-fit explicite : le feedback de sauvegarde vit dans .col-side.
+    scheduleFitZoom(true);
   }
 }
 
@@ -813,6 +820,10 @@ async function loadModelRegistry() {
     input.placeholder = "Registry indisponible";
   } finally {
     if (refresh) refresh.disabled = false;
+    // Re-fit explicite : la liste registry (placeholder/dropdown) vit dans
+    // .col-side ; le MutationObserver ne couvre pas ce rendu, on force un
+    // re-fit debouncé pour que la colonne droite remplisse la hauteur.
+    scheduleFitZoom(true);
   }
 }
 
@@ -869,6 +880,8 @@ async function installModel() {
     installInFlight = false;
     btn.disabled = false;
     setBtnLabel(btn, old);
+    // Re-fit explicite : le feedback d'installation vit dans .col-side.
+    scheduleFitZoom(true);
   }
 }
 
@@ -918,6 +931,8 @@ async function testServer() {
   } finally {
     btn.disabled = false;
     setBtnLabel(btn, old);
+    // Re-fit explicite : le résultat du test de connexion vit dans .col-side.
+    scheduleFitZoom(true);
   }
 }
 
@@ -1714,7 +1729,7 @@ function initHotkeyCapture() {
 // --------------------------------------------------------------------------
 // Zoom global automatique « fit-vp » : la page s'adapte à la hauteur de la
 // fenêtre SANS scroll, par un zoom CSS appliqué au conteneur principal.
-//   - zoom = clamp(hauteur_dispo / hauteur_naturelle, 0.85, 1.6) ;
+//   - zoom = clamp(hauteur_dispo / hauteur_naturelle, 0.75, 1.6) ;
 //   - `zoom` CSS supporté (Chromium + Firefox ≥ v126) ; sinon repli transform
 //     scale (approx. : largeur compensée) ;
 //   - la HAUTEUR NATURELLE DE RÉFÉRENCE est mesurée UNE SEULE FOIS
@@ -1729,11 +1744,14 @@ function initHotkeyCapture() {
 //     lockH de delta/scale (max 2 itérations) — absorbe TOUS les offsets
 //     constants sans les deviner.
 //   - MutationObserver debouncé sur .col-side : si sa hauteur NATURELLE change
-//     de plus de 8px (config rendue, liste registry, feedbacks), on invalide
-//     la base et on re-déclenche fitZoom pour que la colonne droite remplisse
-//     toujours la hauteur. (Le ResizeObserver ne voyait pas ces changements
-//     quand la boîte est plafonnée par max-height : seul le contenu déborde.)
-//   - si le contenu dépasse même au zoom min (0.85) → on laisse le scroll
+//     de plus de 8px par rapport à la base de référence (fitBaseNatural), on
+//     invalide la base et on re-déclenche fitZoom pour que la colonne droite
+//     remplisse toujours la hauteur. (Le ResizeObserver ne voyait pas ces
+//     changements quand la boîte est plafonnée par max-height : seul le
+//     contenu déborde.) Les rendus qui ne mutent pas le sous-arbre de
+//     .col-side (renderConfig remplit des .value, feedbacks) déclenchent un
+//     re-fit explicite via scheduleFitZoom(true).
+//   - si le contenu dépasse même au zoom min (0.75) → on laisse le scroll
 //     normal, on n'écrase jamais le contenu.
 // Sans JS (ou .fit-vp absent) : comportement scroll normal existant.
 // --------------------------------------------------------------------------
@@ -1798,6 +1816,13 @@ function measureColSideNatural() {
     height: layout.style.height,
   };
   const savedSide = { height: colSide.style.height, alignSelf: colSide.style.alignSelf };
+  // Le CSS fit-vp (locks, max-height, overflow) contraint encore la colonne
+  // même déverrouillée en inline : on retire AUSSI la classe body.fit-vp
+  // pendant la mesure pour mesurer en conditions vierges, puis on la restaure
+  // en finally. Aucun paint intermédiaire : les mutations + la lecture
+  // offsetHeight se font dans le même bloc synchrone.
+  const hadFitVp = document.body.classList.contains("fit-vp");
+  if (hadFitVp) document.body.classList.remove("fit-vp");
   layout.style.zoom = "1";
   layout.style.transform = "";
   layout.style.width = "";
@@ -1817,6 +1842,7 @@ function measureColSideNatural() {
     layout.style.height = savedLayout.height;
     colSide.style.height = savedSide.height;
     colSide.style.alignSelf = savedSide.alignSelf;
+    if (hadFitVp) document.body.classList.add("fit-vp");
   }
 }
 
@@ -1864,17 +1890,23 @@ function fitZoom() {
   //    (taille de l'historique…) n'influence jamais cette référence.
   if (!fitBaseNatural) measureFitBase();
 
-  // 2) Échelle cible bornée [0.85, 1.6].
-  const MIN = 0.85, MAX = 1.6;
+  // 2) Échelle cible bornée [0.75, 1.6]. Le plancher 0.75 (au lieu de 0.85)
+  //    laisse passer les cas « col-side ~1370px / available ~1150px » (scale
+  //    idéal 0.839) qui, à 0.85, étaient clampés → lockH trop court → la
+  //    colonne débordait d'une barre de scroll interne. 0.75 ne sort de
+  //    fit-vp que pour les cas vraiment extrêmes (< 0.75).
+  const MIN = 0.75, MAX = 1.6;
   let scale = target / fitBaseNatural;
   if (scale > MAX) scale = MAX;
   if (scale < MIN) scale = MIN;
 
-  // 3) Même au zoom min on déborde encore → on ne garde PAS d'hybride qui
-  //    écrase le contenu : on retire la classe .fit-vp pour retomber sur le
+  // 3) Même au zoom min (0.75) on déborde encore → on ne garde PAS d'hybride
+  //    qui écrase le contenu : on retire la classe .fit-vp pour retomber sur le
   //    layout de BASE (sticky + scroll interne de l'historique). clearFitZoom
   //    purge les styles inline de hauteur/zoom ; invalidateFitBase force une
   //    re-mesure si une entrée (resize) tente de réactiver fit-vp plus tard.
+  //    Cette branche ne se déclenche que pour les cas vraiment extrêmes
+  //    (fitBaseNatural × 0.75 > target, ex. col-side 1600 / available 1180).
   if (fitBaseNatural * MIN > target) {
     clearFitZoom();
     document.body.classList.remove("fit-vp");
@@ -1906,6 +1938,17 @@ function fitZoom() {
     lockH = Math.max(1, Math.round(lockH - delta / scale));
     applyFitZoom(layout, scale, lockH);
   }
+
+  // Diagnostic discret (niveau debug, une ligne par recalcul, jamais par
+  // frame) : aide à comprendre le cas utilisateur si F12 est ouvert — scale
+  // appliqué, base naturelle, hauteur verrouillée, cible et rendu réel.
+  console.debug("[fitZoom]", {
+    scale,
+    base: fitBaseNatural,
+    lockH,
+    target,
+    rendered: layout.getBoundingClientRect().height,
+  });
 }
 
 // Applique le verrouillage de hauteur + le zoom (CSS `zoom` ou repli transform).
@@ -2085,14 +2128,16 @@ function init() {
   // le sous-arbre de .col-side observé ici.
   const colSide = document.querySelector(".col-side");
   if (colSide && typeof MutationObserver === "function") {
-    let lastSideH = measureColSideNatural();
     let moTimer = null;
     const mo = new MutationObserver(() => {
       if (moTimer) clearTimeout(moTimer);
       moTimer = setTimeout(() => {
         const h = measureColSideNatural();
-        if (Math.abs(h - lastSideH) > 8) {
-          lastSideH = h;
+        // Compare à la base de référence (fitBaseNatural), pas à un lastSideH
+        // local qui peut geler sur une valeur obsolète. Si la hauteur
+        // naturelle s'écarte de la base de plus de 8px → on invalide et on
+        // re-déclenche fitZoom.
+        if (fitBaseNatural && Math.abs(h - fitBaseNatural) > 8) {
           invalidateFitBase();
           scheduleFitZoom(true);
         }
@@ -2110,6 +2155,35 @@ function init() {
       scheduleFitZoom(true);
     }).catch(() => {});
   }
+
+  // CHIEN DE GARDE AUTO-RECALANT (filet de sécurité) : intervalle léger
+  // (1000 ms, un seul) qui garantit la CONVERGENCE du zoom quel que soit
+  // l'ordre des événements (renderConfig, registry, fonts, resize…). Il ne
+  // compte QUE si fit-vp est actif (pas de garde visibilityState : l'intervalle
+  // 1s est négligeable et doit tourner aussi en headless/onglets background
+  // pour garantir la convergence), et ne déclenche
+  // scheduleFitZoom(true) que si l'une de ces deux conditions est vraie :
+  //   a) .col-side a un débordement interne résiduel (scrollHeight >
+  //      clientHeight + 4) — ex. le cas plancher 0.75 où un offset non
+  //      absorbé laisserait une barre de scroll interne ;
+  //   b) le rendu RÉEL du .layout (getBoundingClientRect().height) s'écarte
+  //      de la cible (innerHeight - topbar.bottom) de plus de 3px.
+  // La garde FIT_VP_MQ de fitZoom protège déjà si la fenêtre bascule sous
+  // 1024 px, donc on laisse l'intervalle tourner sans le nettoyer.
+  setInterval(() => {
+    if (!document.body.classList.contains("fit-vp")) return;
+    const layout = document.querySelector(".layout");
+    const colSide = document.querySelector(".col-side");
+    if (!layout || !colSide) return;
+    const tbEl = document.querySelector(".topbar");
+    const topbarBottom = tbEl ? tbEl.getBoundingClientRect().bottom : 0;
+    const target = Math.max(220, window.innerHeight - topbarBottom);
+    const rendered = layout.getBoundingClientRect().height;
+    const overflow = colSide.scrollHeight - colSide.clientHeight;
+    if (overflow > 4 || Math.abs(rendered - target) > 3) {
+      scheduleFitZoom(true);
+    }
+  }, 1000);
 
   // Polling du badge serveur toutes les 5 s (pauses si l'onglet est caché)
   loadServerStatus();

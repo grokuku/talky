@@ -206,7 +206,7 @@ login** (hotkeys actives dès la session). Sans `auto_start`, cliquez sur
   état visuel (halo menthe) suit l'état réel du moteur. Le badge de statut affiche
   un chrono « Enregistrement · MM:SS » pendant la dictée.
 - **Zoom global automatique** : la page s'adapte à la hauteur de la fenêtre **sans
-  scroll** (zoom CSS auto, borné 0.85–1.6, re-calculé sur resize et après chaque
+  scroll** (zoom CSS auto, borné 0.75–1.6, re-calculé sur resize et après chaque
   rendu) ; la colonne de configuration scrolle en interne si nécessaire. Sans
   JavaScript, le comportement scroll normal est conservé.
 
