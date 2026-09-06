@@ -1938,7 +1938,7 @@ function fitZoom() {
   let iterations = 1;
   for (let i = 0; i < 4; i++) {
     const meta = {};
-    const h = measureColSideNatural(100 / scale, meta);
+    const h = measureColSideNatural(fitMeasureWidth(scale), meta);
     if (h) measuredH = h;
     colSideExtra = meta.extra || 0;
     let sNew = target / (measuredH + colSideExtra);
@@ -1998,7 +1998,7 @@ function fitZoom() {
     measuredH,
     colSideExtra,
     iterations,
-    width: 100 / scale,
+    width: fitMeasureWidth(scale),
     lockH,
     target,
     rendered: layout.getBoundingClientRect().height,
@@ -2010,16 +2010,28 @@ function applyFitZoom(layout, scale, lockH) {
   if (zoomSupported()) {
     layout.style.height = lockH + "px";
     layout.style.zoom = String(scale);
-    // Le zoom standardisé réduit AUSSI la largeur rendue : on élargit la
-    // largeur CSS à 100/scale % pour conserver la pleine largeur (cohérent
-    // avec la largeur de mesure de la boucle itérative).
-    layout.style.width = (100 / scale) + "%";
+    // PLEINE LARGEUR : largissage compensatoire UNIQUEMENT en zoom-out
+    // (scale < 1 → 100/scale % compense la largeur rendue réduite). En
+    // zoom-in (scale ≥ 1) réduire la largeur CSS sous 100% centrait le bloc
+    // (margin: 0 auto du .container) avec de grosses marges vides → on garde
+    // la largeur pleine (100 %) : l'écran reste rempli horizontalement,
+    // col-side collée au bord droit.
+    layout.style.width = fitRenderWidth(scale);
   } else {
     layout.style.height = lockH + "px";
     layout.style.transformOrigin = "top center";
     layout.style.transform = "scale(" + scale + ")";
-    layout.style.width = (100 / scale) + "%";
+    layout.style.width = fitRenderWidth(scale);
   }
+}
+
+// Largeur CSS du .layout en fonction du zoom : >100 % seulement en zoom-out.
+function fitRenderWidth(scale) {
+  return scale < 1 ? (100 / scale) + "%" : "";
+}
+// Largeur de MESURE reproduisant le rendu (même règle, en % numérique).
+function fitMeasureWidth(scale) {
+  return Math.max(100, 100 / scale);
 }
 
 // Réinitialise les styles inline de hauteur/zoom posés par fitZoom (quand la
